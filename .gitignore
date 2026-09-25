@@ -1,0 +1,12 @@
+# Saida de build
+build/
+
+# Chave de assinatura do APK: quem tiver isto pode publicar um "update" que o
+# Android aceita como legitimo. Nao versionar.
+keystore.jks
+*.jks
+*.keystore
+*.idsig
+
+# Senha da chave (build.sh le de RPCSV_KEYPASS, nunca do fonte)
+.env
