@@ -24,6 +24,7 @@
     <application
         android:label="RPCSV"
         android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:allowBackup="false"
         android:hardwareAccelerated="true"
         android:requestLegacyExternalStorage="true"
@@ -47,7 +48,7 @@
             android:launchMode="singleTop"
             android:configChanges="locale|keyboard|keyboardHidden|navigation|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|layoutDirection"
             android:screenOrientation="sensorLandscape"
-            android:theme="@style/AppTheme"
+            android:theme="@style/GameTheme"
             android:preferMinimalPostProcessing="true"/>
 
         <!-- Necessario para o update in-app: o APK baixado fica em

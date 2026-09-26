@@ -1,14 +1,19 @@
 package com.rpcsv.app;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStreamReader;
 import java.io.RandomAccessFile;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.zip.Inflater;
 
 import javax.crypto.Cipher;
@@ -55,6 +60,11 @@ public final class PkgExtractor {
 
     private static byte[] readAt(RandomAccessFile raf, long pos, int len) throws Exception {
         byte[] b = new byte[len];
+        readInto(raf, pos, b, len);
+        return b;
+    }
+
+    private static void readInto(RandomAccessFile raf, long pos, byte[] b, int len) throws Exception {
         raf.seek(pos);
         int got = 0;
         while (got < len) {
@@ -62,7 +72,6 @@ public final class PkgExtractor {
             if (r < 0) throw new Exception("pkg truncado em " + (pos + got));
             got += r;
         }
-        return b;
     }
 
     private static byte[] aesEcb(byte[] key, byte[] block) throws Exception {
@@ -82,22 +91,56 @@ public final class PkgExtractor {
 
     /** pkg2zip aes128_ctr_xor over a buffer; keystream = AES(key, iv + block). */
     static byte[] xorCtr(byte[] key, byte[] iv, long startBlock, byte[] buf) throws Exception {
-        Cipher c = Cipher.getInstance("AES/ECB/NoPadding");
-        c.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"));
-        byte[] ct = iv.clone();
-        ctrAdd(ct, startBlock);
-        int n = buf.length;
-        if (n == 0) return buf;
-        int blocks = (n + 15) / 16;
-        byte[] inb = new byte[blocks * 16];
-        for (int b = 0; b < blocks; b++) {
-            System.arraycopy(ct, 0, inb, b * 16, 16);
-            ctrAdd(ct, 1);
-        }
-        byte[] ks = c.doFinal(inb);
         byte[] out = buf.clone();
-        for (int i = 0; i < n; i++) out[i] ^= ks[i];
+        new CtrStream(key, iv, startBlock).apply(out, 0, out.length);
         return out;
+    }
+
+    /**
+     * AES-CTR do pkg com estado entre chunks.
+     *
+     * <p>O XOR do pkg e' um CTR continuo: o contador sobe de 16 em 16 bytes
+     * pelo arquivo inteiro. Antes cada chunk de 64 KB criava um Cipher novo e
+     * refazia o keystream desde o inicio do chunk, o que num jogo de 4 GB dava
+     * ~65 mil Cipher e 4 arrays por chunk. Aqui o Cipher e' criado uma vez, o
+     * keystream avanca em blocos de 16 KB e nada e' alocado por chunk.
+     */
+    private static final class CtrStream {
+        private final Cipher cipher;
+        private final byte[] counter;
+        private final byte[] keyStream;
+        private byte[] keyBuf;
+        private int keyPos;
+
+        CtrStream(byte[] key, byte[] iv, long startBlock) throws Exception {
+            cipher = Cipher.getInstance("AES/ECB/NoPadding");
+            cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"));
+            counter = iv.clone();
+            ctrAdd(counter, startBlock);
+            keyStream = new byte[16 * 1024];
+            keyBuf = new byte[16 * 1024];
+            keyPos = keyStream.length;
+        }
+
+        void apply(byte[] buf, int off, int len) throws Exception {
+            int done = 0;
+            while (done < len) {
+                if (keyPos >= keyStream.length) refill();
+                int n = Math.min(len - done, keyStream.length - keyPos);
+                for (int i = 0; i < n; i++) buf[off + done + i] ^= keyStream[keyPos + i];
+                keyPos += n;
+                done += n;
+            }
+        }
+
+        private void refill() throws Exception {
+            for (int b = 0; b < keyStream.length / 16; b++) {
+                System.arraycopy(counter, 0, keyBuf, b * 16, 16);
+                ctrAdd(counter, 1);
+            }
+            cipher.doFinal(keyBuf, 0, keyBuf.length, keyStream, 0);
+            keyPos = 0;
+        }
     }
 
     private static byte[] readSfoBytes(String sfoPath) throws Exception {
@@ -138,6 +181,23 @@ public final class PkgExtractor {
         } catch (Exception e) {
             return "";
         }
+    }
+
+    /**
+     * Todos os campos legiveis do param.sfo, para a tela de informacoes do
+     * app. Devolve mapa vazio em vez de lancar: um SFO corrompido nao pode
+     * impedir a abertura da tela, so deixa os campos em branco.
+     */
+    public static Map<String, Object> readParamInfo(String sfoPath) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        try {
+            byte[] raw = readSfoBytes(sfoPath);
+            if (raw == null) return out;
+            out.putAll(parseSfo(raw));
+        } catch (Exception e) {
+            return out;
+        }
+        return out;
     }
 
     public static String readParamTitle(String sfoPath) {
@@ -221,7 +281,10 @@ public final class PkgExtractor {
         }
         Inflater inf = new Inflater(true);
         inf.setInput(data);
-        if (dict.length > 0) inf.setDictionary(dict);
+        // Sem o flag de dicionario o deflate e' normal: dict fica null e
+        // perguntar dict.length estourava NullPointerException, o que fazia
+        // qualquer zRIF sem dicionário falhar em vez de decodificar.
+        if (dict != null && dict.length > 0) inf.setDictionary(dict);
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         byte[] tmp = new byte[4096];
         while (!inf.finished()) {
@@ -234,8 +297,159 @@ public final class PkgExtractor {
         return bos.toByteArray();
     }
 
+    // ------------------------------------------------------------------
+    // Chave/licença
+    // ------------------------------------------------------------------
+
+    /** Veredito da validação da licença contra a assinatura PFS do próprio PKG. */
+    private static final int LIC_NOT_NEEDED = 0;
+    private static final int LIC_VALID = 1;
+    /** O PKG tem conteúdo cifrado e nenhuma chave foi informada. */
+    private static final int LIC_MISSING = -1;
+    /** A chave foi informada mas não serve para este PKG. */
+    private static final int LIC_WRONG = -2;
+
+    /** Tamanho máximo aceitável para unicv.db em memória (evita OOM com pkg hostil). */
+    private static final int MAX_UNICV_BYTES = 8 << 20;
+
+    /** Um item da tabela do pkg já decifrado. Nada é escrito no disco ao montar a lista. */
+    private static final class Item {
+        String name;
+        long offset;
+        long size;
+        int flags;
+        int pspType;
+    }
+
+    /** keyType 0 = pkg público: o conteúdo não é cifrado, então não há o que XOR. */
+    private static byte[] maybeDecrypt(byte[] key, byte[] iv, long startBlock, byte[] buf) throws Exception {
+        if (key == null) return buf;
+        return xorCtr(key, iv, startBlock, buf);
+    }
+
+    private static byte[] itemKey(byte[] mainKey, String pkgType, int pspType) {
+        boolean pspLike = "psp".equals(pkgType) || "psx".equals(pkgType);
+        if (pspLike) return pspType == 0x90 ? mainKey : PKG_PS3_KEY;
+        return mainKey;
+    }
+
+    /**
+     * Lê a tabela de itens e devolve nomes/offsets já decifrados, <b>sem
+     * escrever nada</b> no disco.
+     *
+     * <p>Isolar essa etapa é o que permite recusar uma chave errada antes de
+     * criar o diretório do jogo: da versão anterior os arquivos eram gravados
+     * primeiro e a chave só era conferida depois (e o erro era engolido), então
+     * uma key errada deixava um jogo pela metade na pasta e ainda reportava
+     * "instalado".
+     */
+    private static List<Item> readItems(RandomAccessFile raf, long encOffset, int itemsOffset,
+            int itemCount, byte[] mainKey, byte[] iv, String pkgType) throws Exception {
+        List<Item> out = new ArrayList<Item>();
+        byte[] tab = maybeDecrypt(mainKey, iv, itemsOffset / 16,
+                readAt(raf, encOffset + itemsOffset, itemCount * 32));
+        for (int i = 0; i < itemCount; i++) {
+            byte[] it = new byte[32];
+            System.arraycopy(tab, i * 32, it, 0, 32);
+            int nameOffset = b32be(it, 0);
+            int nameSize = b32be(it, 4);
+            Item e = new Item();
+            e.offset = b64be(it, 8);
+            e.size = b64be(it, 16);
+            e.pspType = it[24] & 0xff;
+            e.flags = it[27] & 0xff;
+            e.name = new String(maybeDecrypt(itemKey(mainKey, pkgType, e.pspType), iv, nameOffset / 16,
+                    readAt(raf, encOffset + nameOffset, nameSize)), "UTF-8");
+            out.add(e);
+        }
+        return out;
+    }
+
+    /**
+     * Decide se a licença (work.bin / zRIF) serve para este PKG.
+     *
+     * <p>O oráculo é a própria assinatura PFS: o HMAC do primeiro setor de um
+     * arquivo cifrado só confere quando o klicensee do rif é o verdadeiro, e
+     * esse klicensee sai da chave que o usuário escolheu. Ler unicv.db +
+     * files.db + o primeiro setor de cada item custa poucas páginas, então a
+     * chave é julgada <b>antes</b> de extrair os gigabytes do jogo.
+     *
+     * <p>Devolve {@link #LIC_VALID}, {@link #LIC_NOT_NEEDED} (pkg sem
+     * conteúdo PFS) ou um veredito negativo para a chave.
+     */
+    private static int verifyLicense(RandomAccessFile raf, long encOffset, byte[] mainKey,
+            byte[] iv, List<Item> items, byte[] rif) throws Exception {
+        Item unicv = null, filesDb = null;
+        for (int i = 0; i < items.size(); i++) {
+            Item it = items.get(i);
+            if ("sce_pfs/unicv.db".equals(it.name)) unicv = it;
+            else if ("sce_pfs/files.db".equals(it.name)) filesDb = it;
+        }
+        // Sem sce_pfs o conteúdo não é PFS: nada a validar (psp/psm/free).
+        if (unicv == null || filesDb == null) return LIC_NOT_NEEDED;
+        if (rif == null) return LIC_MISSING;
+        if (unicv.size <= 0 || unicv.size > MAX_UNICV_BYTES) return LIC_WRONG;
+        if (filesDb.size <= 0 || filesDb.size > MAX_UNICV_BYTES) return LIC_WRONG;
+
+        byte[] unicvBytes = maybeDecrypt(mainKey, iv, unicv.offset / 16,
+                readAt(raf, encOffset + unicv.offset, (int) unicv.size));
+        byte[] filesDbBytes = maybeDecrypt(mainKey, iv, filesDb.offset / 16,
+                readAt(raf, encOffset + filesDb.offset, (int) filesDb.size));
+
+        long fSalt = filesSalt(filesDbBytes);
+        List<PfsTable> tables = parseUnicv(unicvBytes);
+        // unicv.db sem tabela legível = nada cifrado por PFS neste pkg.
+        if (tables.isEmpty()) return LIC_NOT_NEEDED;
+
+        if (rif.length < 0x60) return LIC_WRONG;
+        byte[] klicensee = new byte[16];
+        System.arraycopy(rif, 0x50, klicensee, 0, 16);
+        byte[] dk = dataKey(klicensee);
+
+        List<PfsCandidate> candidates = new ArrayList<PfsCandidate>();
+        long maxSs = 0;
+        for (int i = 0; i < tables.size(); i++) {
+            PfsTable t = tables.get(i);
+            PfsCandidate c = new PfsCandidate();
+            c.table = t;
+            c.signatureKey = signatureKey(dk, fSalt, t);
+            candidates.add(c);
+            if (t.sectorSize > maxSs) maxSs = t.sectorSize;
+        }
+        if (maxSs <= 0 || maxSs > MAX_UNICV_BYTES) return LIC_WRONG;
+
+        // Um único setor por item já basta: matchingTable compara o HMAC do
+        // cabeçalho com a assinatura guardada em unicv.db.
+        for (int i = 0; i < items.size(); i++) {
+            Item it = items.get(i);
+            if (it.size == 0) continue;
+            if (it.name.startsWith("sce_pfs/")) continue;
+            int headLen = (int) Math.min(it.size, maxSs);
+            byte[] head = maybeDecrypt(mainKey, iv, it.offset / 16,
+                    readAt(raf, encOffset + it.offset, headLen));
+            if (matchingTable(candidates, it.size, head) != null) return LIC_VALID;
+        }
+        // Havia PFS, havia chave, e nada casou: a chave não é deste PKG.
+        return LIC_WRONG;
+    }
+
     /** Extracts a PKG into baseDir/ux0/app/<TITLEID>/ (or pspemu/...). */
+    /** Recebe o andamento da instalação para a barra de progresso. */
+    public interface ProgressListener {
+        /**
+         * @param phase "verify" | "extract" | "finalize"
+         * @param done  bytes concluídos na fase
+         * @param total bytes estimados da fase (0 se desconhecido)
+         */
+        void onProgress(String phase, long done, long total);
+    }
+
     public static Map<String, Object> install(String pkgPath, String zrifText, String workbinPath, String baseDir) throws Exception {
+        return install(pkgPath, zrifText, workbinPath, baseDir, null);
+    }
+
+    public static Map<String, Object> install(String pkgPath, String zrifText, String workbinPath, String baseDir,
+                                              ProgressListener progress) throws Exception {
         if (pkgPath == null || pkgPath.isEmpty()) throw new Exception("caminho do PKG inválido");
         File pf = new File(pkgPath);
         if (!pf.exists()) throw new Exception("arquivo não encontrado: " + pkgPath);
@@ -280,8 +494,12 @@ public final class PkgExtractor {
             else if (contentType == 0x18 || contentType == 0x1d) pkgType = "psm";
             else throw new Exception("tipo de conteúdo não suportado: 0x" + Integer.toHexString(contentType));
 
+            // keyType 0 = pkg público/livre: o conteúdo não é cifrado, e a
+            // versão anterior estourava "chave de pkg não suportada: 0" nele,
+            // o que impedia instalar qualquer jogo grátis.
             byte[] mainKey;
-            if (keyType == 1) mainKey = PKG_PSP_KEY.clone();
+            if (keyType == 0) mainKey = null;
+            else if (keyType == 1) mainKey = PKG_PSP_KEY.clone();
             else if (keyType == 2) mainKey = aesEcb(PKG_VITA_2, iv);
             else if (keyType == 3) mainKey = aesEcb(PKG_VITA_3, iv);
             else if (keyType == 4) mainKey = aesEcb(PKG_VITA_4, iv);
@@ -299,7 +517,7 @@ public final class PkgExtractor {
             String id;
             if ("psp".equals(pkgType) || "psx".equals(pkgType)) {
                 id = new String(header, 0x37, 9, "ISO-8859-1");
-            } else if (!contentId.isEmpty()) {
+            } else if (!contentId.isEmpty() && contentId.length() >= 16) {
                 id = contentId.substring(7, 16);
             } else {
                 throw new Exception("não foi possível determinar o TITLE_ID");
@@ -334,51 +552,80 @@ public final class PkgExtractor {
                 throw new Exception("Licença inválida (work.bin deve ter 512 ou 1024 bytes, obteve " + rif.length + ")");
             }
 
+            // Tabela de itens lida em memória: nada foi escrito no disco até aqui.
+            List<Item> items = readItems(raf, encOffset, itemsOffset, itemCount, mainKey, iv, pkgType);
+
+            // Chave errada BLOQUEIA a instalação, e ela é julgada antes de
+            // extrair qualquer arquivo. Sem esta checagem o fluxo antigo
+            // gravava o jogo inteiro, engolia a falha da PFS e devolvia
+            // ok=true — o usuário só descobria que a key estava errada quando
+            // o jogo não abria.
+            if (progress != null) progress.onProgress("verify", 0, 1);
+            int lic = "psm".equals(pkgType) ? LIC_NOT_NEEDED
+                    : verifyLicense(raf, encOffset, mainKey, iv, items, rif);
+            if (progress != null) progress.onProgress("verify", 1, 1);
+            if (lic == LIC_MISSING) {
+                throw new Exception("Este PKG é protegido: informe a chave (zRIF ou work.bin) correta para instalar.");
+            }
+            if (lic == LIC_WRONG) {
+                throw new Exception("Chave inválida para este PKG. A instalação foi cancelada — selecione a chave correta.");
+            }
+            boolean rifOk = lic == LIC_VALID;
+
             String rootName;
             if ("app".equals(pkgType) || "psm".equals(pkgType)) rootName = "ux0/app/" + id;
             else if ("dlc".equals(pkgType)) rootName = "ux0/addcont/" + id + "/" + (contentId.length() >= 24 ? contentId.substring(16, 24) : "content");
             else rootName = "pspemu/PSP/GAME/" + id;
 
             File baseDirF = new File(baseDir, rootName);
-            byte[] itemTab = xorCtr(mainKey, iv, itemsOffset / 16, readAt(raf, encOffset + itemsOffset, itemCount * 32));
+            // Total conhecido antes de gravar qualquer byte: e a soma dos
+            // itens + head/tail. Sem isso a barra so cresceria por contagem de
+            // arquivo e ficaria presa em 99% com um jogo de um arquivo so.
+            long totalBytes = encOffset + itemsSize + Math.max(0, raf.length() - (encOffset + encSize));
+            if (progress != null) progress.onProgress("extract", 0, totalBytes);
+            long doneBytes = 0;
+            // Um buffer e um keystream para o jogo inteiro: antes cada chunk de
+            // 64 KB alocava 4 arrays e criava um Cipher, o que em um jogo de
+            // 4 GB significava centenas de milhares de alocacoes.
+            final int chunkSize = 262144;
+            byte[] buf = new byte[chunkSize];
+            for (int i = 0; i < items.size(); i++) {
+                Item it = items.get(i);
+                if (it.name.startsWith("/") || it.name.contains("..")) continue;
 
-            boolean sceSysPkg = baseDirF.isDirectory() && new File(baseDirF, "sce_sys/package").isDirectory();
-            for (int i = 0; i < itemCount; i++) {
-                byte[] it = new byte[32];
-                System.arraycopy(itemTab, i * 32, it, 0, 32);
-                int nameOffset = b32be(it, 0);
-                int nameSize = b32be(it, 4);
-                long dataOffset = b64be(it, 8);
-                long dataSize = b64be(it, 16);
-                int pspType = it[24] & 0xff;
-                int flags = it[27] & 0xff;
-
-                byte[] itemKey = ("psp".equals(pkgType) || "psx".equals(pkgType)) ? (pspType == 0x90 ? mainKey : PKG_PS3_KEY) : mainKey;
-                String name = new String(xorCtr(itemKey, iv, nameOffset / 16, readAt(raf, encOffset + nameOffset, nameSize)), "UTF-8");
-                if (name.startsWith("/") || name.contains("..")) continue;
-
-                if (flags == 4 || flags == 18) {
-                    if ("sce_sys/package".equals(name)) sceSysPkg = true;
-                    new File(baseDirF, name).mkdirs();
+                if (it.flags == 4 || it.flags == 18) {
+                    new File(baseDirF, it.name).mkdirs();
                     continue;
                 }
 
-                boolean decrypt = !(("app".equals(pkgType) || "dlc".equals(pkgType)) && "sce_sys/package/digs.bin".equals(name));
-                File out = new File(baseDirF, name);
+                boolean decrypt = !(("app".equals(pkgType) || "dlc".equals(pkgType)) && "sce_sys/package/digs.bin".equals(it.name));
+                File out = new File(baseDirF, it.name);
                 if (out.getParentFile() != null) out.getParentFile().mkdirs();
                 FileOutputStream os = new FileOutputStream(out);
-                long offset = dataOffset;
-                long remain = dataSize;
-                while (remain > 0) {
-                    int chunk = (int) Math.min(remain, 65536);
-                    byte[] raw = readAt(raf, encOffset + offset, chunk);
-                    if (decrypt) raw = xorCtr(itemKey, iv, offset / 16, raw);
-                    os.write(raw, 0, raw.length);
-                    offset += chunk;
-                    remain -= chunk;
+                try {
+                    byte[] key = itemKey(mainKey, pkgType, it.pspType);
+                    CtrStream ctr = (decrypt && key != null) ? new CtrStream(key, iv, it.offset / 16) : null;
+                    long offset = it.offset;
+                    long remain = it.size;
+                    while (remain > 0) {
+                        int chunk = (int) Math.min(remain, chunkSize);
+                        readInto(raf, encOffset + offset, buf, chunk);
+                        if (ctr != null) ctr.apply(buf, 0, chunk);
+                        os.write(buf, 0, chunk);
+                        offset += chunk;
+                        remain -= chunk;
+                        // A cada 4 MB: menos IPC por arquivo minúsculo, e ainda
+                        // Updates fluido num jogo de varios GB.
+                        if (progress != null && (doneBytes - (doneBytes / (4L << 20)) * (4L << 20)) >= (4L << 20)) {
+                            progress.onProgress("extract", doneBytes, totalBytes);
+                        }
+                        doneBytes += chunk;
+                    }
+                } finally {
+                    os.close();
                 }
-                os.close();
             }
+            if (progress != null) progress.onProgress("extract", totalBytes, totalBytes);
 
             if ("app".equals(pkgType) || "dlc".equals(pkgType) || "psm".equals(pkgType)) {
                 File pkgDir = new File(baseDirF, "sce_sys/package");
@@ -391,19 +638,48 @@ public final class PkgExtractor {
                 if (tailStart < 0 || tailStart > raf.length()) throw new Exception("pkg truncado (tail)");
                 writeTo(new File(pkgDir, "tail.bin"), readAt(raf, tailStart, (int) tailLen));
                 writeTo(new File(pkgDir, "stat.bin"), new byte[768]);
-                if (rif != null) {
+                // work.bin só é gravado com chave validada (ou quando o pkg
+                // nem usa PFS). Gravar uma chave não conferida aqui é o que
+                // produzia um jogo que o emulador recusava depois.
+                if (rif != null && (rifOk || lic == LIC_NOT_NEEDED)) {
                     writeTo(new File(pkgDir, "work.bin"), rif);
                 }
             }
 
-            // PFS: decrypt game content sealed inside sce_pfs (files.db / unicv.db).
-            // Only files whose table signature AND size match are rewritten, so a wrong
-            // licence never corrupts an extraction.
+            // A licença também precisa ir para vita/ux0/license/<titleId>/
+            // <contentId>.rif. O sce_sys/package/work.bin sozinho não serve:
+            // é a engine quem lê o .rif (get_license) para tirar o klic, e
+            // sem esse arquivo ela cai no valor default — klic zerado — e
+            // decrypt_fself() aborta com "No klic provided for encrypted App".
+            // Aí a sessão nem chega a comecar e a activity fecha em menos de
+            // 1 s, que é exatamente o "crash ao iniciar o jogo".
+            String licencePath = null;
+            if (rif != null && (rifOk || lic == LIC_NOT_NEEDED)
+                    && ("app".equals(pkgType) || "psm".equals(pkgType))) {
+                try {
+                    String rifCid = rifContentId(rif);
+                    if (rifCid.isEmpty()) rifCid = contentId;
+                    if (rifCid.length() > 16) {
+                        File licDir = new File(baseDir, "ux0/license/" + id);
+                        File licDst = new File(licDir, rifCid + ".rif");
+                        writeTo(licDst, rif);
+                        licencePath = licDst.getAbsolutePath();
+                    }
+                } catch (Exception e) {
+                    licencePath = null;
+                }
+            }
+
+            // PFS: descriptografa o conteúdo selado em sce_pfs. Só roda com a
+            // chave já validada acima, então "instalado" passou a significar
+            // "pronto para abrir" e não "os arquivos foram copiados".
             int pfsFiles = 0;
             String pfsError = null;
-            if (rif != null && !"psm".equals(pkgType) && new File(baseDirF, "sce_pfs").exists()) {
+            if (rifOk && new File(baseDirF, "sce_pfs").exists()) {
                 try {
+                    if (progress != null) progress.onProgress("finalize", 0, 0);
                     pfsFiles = decryptPfsDir(baseDirF, rif);
+                    if (progress != null) progress.onProgress("finalize", 1, 1);
                 } catch (Exception e) {
                     pfsFiles = -1;
                     pfsError = String.valueOf(e.getMessage());
@@ -422,6 +698,8 @@ public final class PkgExtractor {
             r.put("pfsFiles", Integer.valueOf(pfsFiles));
             r.put("keyType", Integer.valueOf(keyType));
             r.put("itemCount", Integer.valueOf(itemCount));
+            r.put("licenceChecked", Boolean.valueOf(rifOk));
+            if (licencePath != null) r.put("licenceInstalled", licencePath);
             if (pfsError != null) r.put("pfsError", pfsError);
             return r;
         } finally {
@@ -438,6 +716,22 @@ public final class PkgExtractor {
         FileOutputStream os = new FileOutputStream(f);
         os.write(data);
         os.close();
+    }
+
+    /**
+     * CONTENT_ID que a própria licença carrega (SceNpDrmLicense.content_id,
+     * offset 0x10, 0x30 bytes, terminado em NUL). É esse nome que a engine usa
+     * para montar o caminho do .rif, então vale mais do que o do param.sfo.
+     */
+    private static String rifContentId(byte[] rif) {
+        if (rif == null || rif.length < 0x40) return "";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0x10; i < 0x40 && i < rif.length; i++) {
+            int c = rif[i] & 0xFF;
+            if (c == 0) break;
+            sb.append((char) c);
+        }
+        return sb.toString().trim();
     }
 
     // zRIF deflate preset dictionary (pkg2zip_zrif.c), exactly 1024 bytes.
@@ -622,24 +916,59 @@ public final class PkgExtractor {
 
     private static void decryptSector(byte[] bytes, byte[] key, byte[] tweakMask, long sector, long sectorSize)
             throws Exception {
-        long byteOffset = sector * sectorSize;
-        byte[] iv = new byte[16];
-        System.arraycopy(tweakMask, 0, iv, 0, 16);
-        for (int i = 0; i < 8; i++) iv[i] ^= (byte) (byteOffset & 0xff);
-        int aligned = bytes.length & ~0xf;
-        byte[] tailIv = null;
-        if (aligned != 0 && aligned != bytes.length) {
-            tailIv = java.util.Arrays.copyOfRange(bytes, aligned - 16, aligned);
+        new PfsCiphers(key, sectorSize).sector(bytes, 0, bytes.length, tweakMask, sector, sectorSize);
+    }
+
+    /**
+     * Ciphers de PFS mantidos vivos durante um arquivo inteiro.
+     *
+     * <p>Num arquivo selado so o IV muda de setor para setor, mas a versao
+     * anterior criava dois Cipher (CBC + ECB) e um array por setor: um
+     * data.psarc de 2 GB sao 65 mil setores, ou seja, 130 milCipher e 65 mil
+     * copias so de overhead. Aqui os Cipher nascem uma vez e os setores sao
+     * decifrados no lugar, direto no buffer do chunk.
+     */
+    private static final class PfsCiphers {
+        private final SecretKeySpec spec;
+        private final Cipher cbc = Cipher.getInstance("AES/CBC/NoPadding");
+        private final Cipher ecb;
+        private final byte[] scratch;
+        private final byte[] iv = new byte[16];
+        private final byte[] one = new byte[16];
+
+        PfsCiphers(byte[] key, long sectorSize) throws Exception {
+            spec = new SecretKeySpec(key, "AES");
+            ecb = Cipher.getInstance("AES/ECB/NoPadding");
+            ecb.init(Cipher.ENCRYPT_MODE, spec);
+            scratch = new byte[(int) Math.max(16, Math.min(sectorSize, 1L << 20))];
         }
-        if (aligned != 0) {
-            byte[] dec = aesCbc(key, iv, java.util.Arrays.copyOf(bytes, aligned), true);
-            System.arraycopy(dec, 0, bytes, 0, aligned);
-        }
-        if (aligned != bytes.length) {
-            byte[] src = tailIv != null ? tailIv : iv;
-            byte[] encIv = aesBlock(key, src, false);
-            for (int i = 0; i < bytes.length - aligned; i++) {
-                bytes[aligned + i] ^= encIv[i];
+
+        void sector(byte[] bytes, int off, int len, byte[] tweakMask, long sector, long sectorSize)
+                throws Exception {
+            if (len <= 0) return;
+            long byteOffset = sector * sectorSize;
+            System.arraycopy(tweakMask, 0, iv, 0, 16);
+            for (int i = 0; i < 8; i++) iv[i] ^= (byte) (byteOffset >>> (i * 8));
+
+            int aligned = len & ~0xf;
+            byte[] tailIv = null;
+            if (aligned != 0 && aligned != len) {
+                tailIv = java.util.Arrays.copyOfRange(bytes, off + aligned - 16, off + aligned);
+            }
+            if (aligned != 0) {
+                cbc.init(Cipher.DECRYPT_MODE, spec, new IvParameterSpec(iv));
+                cbc.doFinal(bytes, off, aligned, scratch, 0);
+                System.arraycopy(scratch, 0, bytes, off, aligned);
+            }
+            if (aligned != len) {
+                // O resto (< 16 bytes) e' a cifra de um unico bloco cujo IV e' o
+                // bloco anterior do ciphertext, entao vai por ECB.
+                byte[] src = tailIv != null ? tailIv : iv;
+                System.arraycopy(src, 0, one, 0, 16);
+                byte[] encIv = ecb.doFinal(one);
+                for (int i = 0; i < len - aligned; i++) {
+                    bytes[off + aligned + i] ^= encIv[i];
+                }
             }
         }
     }
@@ -712,8 +1041,33 @@ public final class PkgExtractor {
             candidates.add(c);
         }
         final int[] done = { 0 };
-        walkPfs(appDir, candidates, dk, done);
+        Set<String> plain = pflistUnencrypted(new File(sp, "pflist"));
+        walkPfs(appDir, candidates, dk, done, plain, "");
         return done[0];
+    }
+
+    // pflist marca com "nenc" os arquivos que o PFS indexa mas o PKG guarda em
+    // claro: sce_sys/param.sfo e sce_sys/clearsign, no Taiko. A assinatura do
+    // primeiro setor deles tambem confere (o indice registra o arquivo em
+    // claro), entao a busca por tabela nao os distingue e a descriptografia
+    // os corrompia. No Taiko o param.sfo por ca disso virava lixo
+    // (md5 c66cf6fc) e o clearsign perdia o cabecalho .DRM. A flag e a unica
+    // fonte que separa os dois casos, e e o que o Vita3K respeita.
+    private static Set<String> pflistUnencrypted(File pflist) throws Exception {
+        Set<String> out = new HashSet<String>();
+        if (pflist == null || !pflist.isFile()) return out;
+        BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(pflist), "UTF-8"));
+        try {
+            String line;
+            while ((line = br.readLine()) != null) {
+                if (line.isEmpty() || line.charAt(0) == '#') continue;
+                String[] f = line.split("\t+", -1);
+                if (f.length >= 3 && f[2].trim().equals("nenc")) out.add(f[0].trim());
+            }
+        } finally {
+            br.close();
+        }
+        return out;
     }
 
     // Decrypt the whole file (any size) in place, streaming in chunks so that
@@ -724,6 +1078,7 @@ public final class PkgExtractor {
         if (ss == 0) throw new Exception("PFS: sectorSize 0 em " + f.getName());
         RandomAccessFile raf = new RandomAccessFile(f, "rw");
         try {
+            PfsCiphers ciphers = new PfsCiphers(dk, ss);
             long chunkFull = (4L << 20) / ss * ss;
             byte[] buf = new byte[(int) Math.min(chunkFull, Math.max(ss, len))];
             long offset = 0;
@@ -734,9 +1089,7 @@ public final class PkgExtractor {
                 raf.readFully(buf, 0, chunk);
                 for (int o = 0; o < chunk; o += (int) ss) {
                     int n = (int) Math.min(ss, chunk - o);
-                    byte[] s = java.util.Arrays.copyOfRange(buf, o, o + n);
-                    decryptSector(s, dk, tweakMask, sector, ss);
-                    System.arraycopy(s, 0, buf, o, n);
+                    ciphers.sector(buf, o, n, tweakMask, sector, ss);
                     sector++;
                 }
                 raf.seek(offset);
@@ -748,19 +1101,22 @@ public final class PkgExtractor {
         }
     }
 
-    private static void walkPfs(File dir, List<PfsCandidate> candidates, byte[] dk, int[] done) throws Exception {
+    private static void walkPfs(File dir, List<PfsCandidate> candidates, byte[] dk, int[] done,
+                                Set<String> plain, String rel) throws Exception {
         File[] children = dir.listFiles();
         if (children == null) return;
         long maxSs = 0;
         for (PfsCandidate c : candidates) maxSs = Math.max(maxSs, c.table.sectorSize);
         for (File f : children) {
             if (f.getName().equals("sce_pfs")) continue;
+            String path = rel.isEmpty() ? f.getName() : rel + "/" + f.getName();
             if (f.isDirectory()) {
-                walkPfs(f, candidates, dk, done);
+                walkPfs(f, candidates, dk, done, plain, path);
                 continue;
             }
             long len = f.length();
             if (len == 0) continue;
+            if (plain.contains(path)) continue;
             int headLen = (int) Math.min(len, maxSs);
             byte[] head = new byte[headLen];
             RandomAccessFile raf = new RandomAccessFile(f, "r");

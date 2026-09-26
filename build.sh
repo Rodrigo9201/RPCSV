@@ -61,7 +61,24 @@ print('assets engine ok')
 EOF
 
 echo "==> icons"
-python3 "$PWD/makeicon.py"
+# A marca vem do genbrand.py (gerada do zero, sem pegar arte pronta de
+# nenhum Vita3K). Rodar o antigo makeicon.py aqui sobrescrevia o
+# ic_launcher.png com um placeholder de tela+bolhas a cada build, e era
+# exatamente por isso que o icone do launcher nunca mudava.
+# O gerador leva ~6 min, entao so roda de verdade quando os arquivos
+# faltam ou quando RPCSV_REGEN_BRAND=1.
+if [ "${RPCSV_REGEN_BRAND:-0}" = "1" ]; then
+    python3 "$PWD/genbrand.py"
+elif [ ! -f "$PWD/res/mipmap-xhdpi/ic_launcher.png" ] \
+  || [ ! -f "$PWD/res/mipmap-xhdpi/ic_launcher_foreground.png" ] \
+  || [ ! -f "$PWD/res/drawable-nodpi/rpcsv_mark.png" ] \
+  || [ ! -f /root/rpcsv/renderer/brand/rpcsv-mark.png ] \
+  || [ ! -f /root/rpcsv/renderer/brand/boot.wav ]; then
+    echo "    arte ausente, gerando"
+    python3 "$PWD/genbrand.py"
+else
+    echo "    arte ja gerada (RPCSV_REGEN_BRAND=1 para refazer)"
+fi
 
 echo "==> aapt2 compile"
 aapt2 compile --dir "$PWD/res" -o "$OUT/res.zip"

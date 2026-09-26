@@ -31,6 +31,7 @@ import java.io.RandomAccessFile;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -54,7 +55,8 @@ import org.vita3k.emulator.EmuSurface;
  *   2. forca tela cheia no boot (boot-apps-full-screen: true);
  *   3. aplica a aba Core do app (modules-mode + lle-modules + cpu-opt) e o
  *      renderer escolhido nas configuracoes, lendo o config.json do app;
- *   4. mantem a tela acesa (FLAG_KEEP_SCREEN_ON) para o jogo nunca "apagar".
+ *   4. aplica os ajustes por titulo (aba "Config" da tela de detalhe do app);
+ *   5. mantem a tela acesa (FLAG_KEEP_SCREEN_ON) para o jogo nunca "apagar".
  */
 public class EngineActivity extends SDLActivity {
 
@@ -64,6 +66,9 @@ public class EngineActivity extends SDLActivity {
     private Thread memSampler;
 
     static final String APP_RESTART_PARAMETERS = "AppStartParameters";
+
+    /** Titulo em execucao, usado para achar os ajustes daquela aba "Config". */
+    static final String EXTRA_TITLE_ID = "rpcsv.titleId";
 
     private static final String ASSET_TEMPLATE = "templates/config.yml";
 
@@ -100,7 +105,7 @@ public class EngineActivity extends SDLActivity {
             + "import-textures: false\n"
             + "export-textures: false\n"
             + "export-as-png: true\n"
-            + "memory-mapping: double-buffer\n"
+            + "memory-mapping: Double buffer\n"
             + "boot-apps-full-screen: true\n"
             + "show-live-area-screen: false\n"
             + "audio-backend: SDL\n"
@@ -208,7 +213,6 @@ public class EngineActivity extends SDLActivity {
             + "http-timeout-sleep-ms: 100\n"
             + "http-read-end-attempts: 10\n"
             + "http-read-end-sleep-ms: 250\n"
-            + "adhoc-addr: 0\n"
             + "front-camera-type: 2\n"
             + "front-camera-id: \"\"\n"
             + "front-camera-image: \"\"\n"
@@ -280,15 +284,25 @@ public class EngineActivity extends SDLActivity {
             Map<String, String[]> lists = new LinkedHashMap<String, String[]>();
             scalars.put("boot-apps-full-screen", "true");
             scalars.put("validation-layer", "false");
-            scalars.put("disable-surface-sync", "false");
             scalars.put("show-live-area-screen", "false");
             scalars.put("stretch_the_display_area", "true");
             scalars.put("fullscreen_hd_res_pixel_perfect", "true");
 
             readUiOverrides(scalars, lists);
 
+            // Chaves que a build embarcada da engine nao consegue converter.
+            // Enquanto uma delas estiver no arquivo o yaml-cpp aborta o
+            // config.yml inteiro ("bad conversion") e nenhum ajuste do app
+            // chega na engine — sem nenhum aviso na tela. O patch so reescreve
+            // chaves, entao a remocao e explicita.
+            String original = text;
+            text = dropUnparsableKeys(text);
+
             String next = patchYaml(text, scalars, lists);
-            boolean changed = !cfg.exists() || !next.equals(text);
+            // Compara com o texto lido do disco, e nao com o ja filtrado: se
+            // o patch nao mudasse nada, a versao sem a chave ruim seria
+            // descartada e o poison key continuaria no arquivo para sempre.
+            boolean changed = !cfg.exists() || !next.equals(original);
             if (changed) {
                 writeFile(cfg, next.getBytes("UTF-8"));
                 Log.i(TAG, "config.yml ajustado (tela cheia + aba Core aplicada)");
@@ -371,6 +385,8 @@ public class EngineActivity extends SDLActivity {
                     scalars.put("fullscreen_hd_res_pixel_perfect", settings.optBoolean("fullscreenHdResPixelPerfect", true) ? "true" : "false");
                 }
 
+                readGraphicsOverrides(settings, scalars);
+
                 // Aba Audio: sem isto o seletor de volume/backend/NGS da tela de
                 // configuracoes nao mudava nada (o valor ficava fixo no template).
                 if (settings.has("audioBackend")) {
@@ -390,13 +406,563 @@ public class EngineActivity extends SDLActivity {
                 if (settings.has("ngsEnable")) {
                     scalars.put("ngs-enable", settings.optBoolean("ngsEnable", false) ? "true" : "false");
                 }
+
+                readSystemOverrides(settings, scalars, lists);
+                readControlsOverrides(settings, scalars, lists);
+                readCameraOverrides(settings, scalars);
+                readInterfaceOverrides(settings, scalars);
+                readEmulatorOverrides(settings, scalars);
+                readNetworkOverrides(settings, scalars);
+                readDebugOverrides(settings, scalars, lists);
             }
+
+            readEngineOverrides(root, scalars);
+            readTitleOverrides(root, scalars);
         } catch (Throwable t) {
             Log.e(TAG, "config.json ignorado", t);
         }
     }
 
+    /**
+     * Aba Sistema: identificadores de language/data/hora e o teclado em tela
+     * (IME). sys-lang e current-ime-lang usam a mesma enum de 0..19
+     * (SCE_SYSTEM_LANG / SCE_ImeLanguage).
+     */
+    private void readSystemOverrides(JSONObject settings, Map<String, String> scalars,
+                                     Map<String, String[]> lists) {
+        putInt(scalars, settings, "sys-button", "sysButton", 1, 0, 1);
+        putLang(scalars, settings, "sys-lang", "sysLang");
+        putLang(scalars, settings, "current-ime-lang", "currentImeLang");
+        putInt(scalars, settings, "sys-date-format", "sysDateFormat", 0, 0, 2);
+        putInt(scalars, settings, "sys-time-format", "sysTimeFormat", 0, 0, 1);
+        putBool(scalars, settings, "pstv-mode", "pstvMode", false);
+        putBool(scalars, settings, "show-mode", "showMode", false);
+        putBool(scalars, settings, "demo-mode", "demoMode", false);
+
+        if (settings.has("userLang")) {
+            // Vazio = a engine escolhe pelo idioma do sistema.
+            scalars.put("user-lang", settings.optString("userLang", "").trim());
+        }
+        if (settings.has("imeLangs")) {
+            // Campo vazio nao pode apagar a lista do template (ime-langs: [4]).
+            String[] l = intArray(settings.opt("imeLangs"), 32);
+            if (l.length > 0) lists.put("ime-langs", l);
+        }
+    }
+
+    /**
+     * Aba Controles: multiplicador analogico, LED, binds de teclado (scancodes
+     * do SDL) e o mapeamento de botoes/eixos do gamepad externo.
+     */
+    private void readControlsOverrides(JSONObject settings, Map<String, String> scalars,
+                                      Map<String, String[]> lists) {
+        putBool(scalars, settings, "disable-motion", "disableMotion", false);
+
+        // O slider vai de 50 a 200; a engine le o multiplicador como float.
+        if (settings.has("analogMultiplier")) {
+            double m = settings.optDouble("analogMultiplier", 1.0d);
+            if (m < 0.1d) m = 0.1d;
+            if (m > 5.0d) m = 5.0d;
+            double v = Math.round(m) / 100.0d;
+            scalars.put("controller-analog-multiplier", String.valueOf(v));
+        }
+
+        if (settings.has("ledColor")) {
+            String[] rgb = rgbList(settings.optString("ledColor", ""));
+            if (rgb.length == 3) lists.put("controller-led-color", rgb);
+        }
+
+        JSONObject kbd = settings.optJSONObject("keyboard");
+        if (kbd != null) {
+            Iterator<String> it = kbd.keys();
+            while (it.hasNext()) {
+                String raw = it.next();
+                String action = kbdAction(raw);
+                if (action == null) continue;
+                // config.json guarda "button-cross"; o config.yml usa
+                // "keyboard-button-cross".
+                scalars.put("keyboard-" + action, scancode(kbd.optString(raw, "")));
+            }
+        }
+
+        if (settings.has("controllerBinds")) {
+            String[] b = intArray(settings.opt("controllerBinds"), 15);
+            if (b.length == 15) lists.put("controller-binds", b);
+        }
+        if (settings.has("controllerAxisBinds")) {
+            String[] a = intArray(settings.opt("controllerAxisBinds"), 7);
+            if (a.length == 7) lists.put("controller-axis-binds", a);
+        }
+    }
+
+    /** Aba Camera: tipo, cor, imagem e id do dispositivo. */
+    private void readCameraOverrides(JSONObject settings, Map<String, String> scalars) {
+        putInt(scalars, settings, "front-camera-type", "frontCamType", 2, 0, 2);
+        putInt(scalars, settings, "back-camera-type", "backCamType", 2, 0, 2);
+        // A engine guarda a cor como inteiro 0xRRGGBB, a tela usa #rrggbb.
+        if (settings.has("frontCamColor")) {
+            scalars.put("front-camera-color", String.valueOf(colorInt(settings.optString("frontCamColor", ""))));
+        }
+        if (settings.has("backCamColor")) {
+            scalars.put("back-camera-color", String.valueOf(colorInt(settings.optString("backCamColor", ""))));
+        }
+        if (settings.has("frontCamImage")) {
+            scalars.put("front-camera-image", settings.optString("frontCamImage", ""));
+        }
+        if (settings.has("backCamImage")) {
+            scalars.put("back-camera-image", settings.optString("backCamImage", ""));
+        }
+        if (settings.has("frontCamId")) {
+            scalars.put("front-camera-id", settings.optString("frontCamId", ""));
+        }
+        if (settings.has("backCamId")) {
+            scalars.put("back-camera-id", settings.optString("backCamId", ""));
+        }
+    }
+
+    /** Aba Interface: fundo, grade da lista de apps e avisos do sistema. */
+    private void readInterfaceOverrides(JSONObject settings, Map<String, String> scalars) {
+        // O slider vai de 0 a 100; a engine usa float de 0 a 1.
+        if (settings.has("backgroundAlpha")) {
+            double a = settings.optDouble("backgroundAlpha", 0.3d);
+            if (a < 0.0d) a = 0.0d;
+            if (a > 1.0d) a = 1.0d;
+            scalars.put("background-alpha", String.valueOf(Math.round(a * 100.0d) / 100.0d));
+        }
+        putBool(scalars, settings, "apps-list-grid", "appsListGrid", false);
+        putBool(scalars, settings, "show-welcome", "showWelcome", true);
+        putBool(scalars, settings, "warn-missing-firmware", "warnMissingFirmware", true);
+    }
+
+    /** Aba Emulador: boot, sobreposicao, captura, atrasos e turbo. */
+    private void readEmulatorOverrides(JSONObject settings, Map<String, String> scalars) {
+        putBool(scalars, settings, "boot-apps-full-screen", "bootAppsFullScreen", true);
+        putBool(scalars, settings, "show-live-area-screen", "showLiveAreaScreen", false);
+        putBool(scalars, settings, "show-compile-shaders", "showCompileShaders", true);
+        putBool(scalars, settings, "turbo-mode", "turboMode", false);
+        putBool(scalars, settings, "discord-rich-presence", "discordRichPresence", false);
+        putBool(scalars, settings, "performance-overlay", "performanceOverlay", false);
+        putInt(scalars, settings, "performance-overlay-detail", "performanceOverlayDetail", 0, 0, 3);
+        putInt(scalars, settings, "performance-overlay-position", "performanceOverlayPosition", 0, 0, 5);
+        putInt(scalars, settings, "screenshot-format", "screenshotFormat", 0, 0, 2);
+        putInt(scalars, settings, "file-loading-delay", "fileLoadingDelay", 0, 0, 30000);
+        putInt(scalars, settings, "delay-start", "delayStart", 0, 0, 3600);
+        putInt(scalars, settings, "delay-background", "delayBackground", 0, 0, 3600);
+    }
+
+    /** Aba Rede: HTTP, login automatico, tempos limite e endereco ad-hoc. */
+    private void readNetworkOverrides(JSONObject settings, Map<String, String> scalars) {
+        putBool(scalars, settings, "http-enable", "httpEnable", true);
+        putBool(scalars, settings, "user-auto-connect", "userAutoConnect", false);
+        putInt(scalars, settings, "check-for-updates-mode", "checkForUpdatesMode", 0, 0, 2);
+        putInt(scalars, settings, "http-timeout-attempts", "httpTimeoutAttempts", 50, 0, 1000);
+        putInt(scalars, settings, "http-timeout-sleep-ms", "httpTimeoutSleepMs", 100, 0, 60000);
+        putInt(scalars, settings, "http-read-end-attempts", "httpReadEndAttempts", 10, 0, 1000);
+        putInt(scalars, settings, "http-read-end-sleep-ms", "httpReadEndSleepMs", 250, 0, 60000);
+        // NÃO escrever "adhoc-addr" no config.yml, mesmo com adhocAddr no
+        // config.json. A build da engine embarcada rejeita essa chave com
+        // "yaml-cpp: bad conversion" para qualquer valor (int, string, lista e
+        // nulo), e o erro é fatal para o arquivo inteiro: o config.yml é
+        // descartado e TODOS os ajustes do app passam a ser ignorados pela
+        // engine, sem aviso. Como patchYaml() reinsere no fim toda chave pedida
+        // que não exista no arquivo, incluir a chave aqui a trazia de volta a
+        // cada boot. A remoção de instalações antigas é feita por
+        // dropUnparsableKeys(), em onConfigureEngine().
+        // psn-signed-in fica por conta do app: e um estado de sessao, nao uma
+        // preferencia, e a engine reescreve esse valor sozinha.
+    }
+
+    /** Aba Depuracao: registro, depurador remoto e profiler. */
+    private void readDebugOverrides(JSONObject settings, Map<String, String> scalars,
+                                    Map<String, String[]> lists) {
+        putInt(scalars, settings, "log-level", "logLevel", 0, 0, 6);
+        putBool(scalars, settings, "log-active-shaders", "logActiveShaders", false);
+        putBool(scalars, settings, "log-uniforms", "logUniforms", false);
+        putBool(scalars, settings, "log-compat-warn", "logCompatWarn", false);
+        putBool(scalars, settings, "archive-log", "archiveLog", false);
+        putBool(scalars, settings, "gdbstub", "gdbstub", false);
+        putBool(scalars, settings, "wait-for-debugger", "waitForDebugger", false);
+        putBool(scalars, settings, "color-surface-debug", "logColorSurface", false);
+        putBool(scalars, settings, "tracy-primitive-impl", "tracyPrimitiveImpl", false);
+        if (settings.has("tracyModules")) {
+            String[] m = strArray(settings.opt("tracyModules"));
+            if (m.length > 0) lists.put("tracy-advanced-profiling-modules", m);
+        }
+        // log-exports, log-imports, dump-elfs, watch-memory e watch-import-calls
+        // nao existem no config.yml desta build: as chaves da tela so ficam no
+        // config.json.
+    }
+
+    /**
+     * Fora do bloco "settings": cpu-pool-size (bloco cpu) e pref-path (pasta
+     * do emulador, que o app tambem usa como installDir).
+     */
+    private void readEngineOverrides(JSONObject root, Map<String, String> scalars) {
+        JSONObject cpu = root.optJSONObject("cpu");
+        JSONObject settings = root.optJSONObject("settings");
+        int pool = -1;
+        if (cpu != null && cpu.has("poolSize")) pool = cpu.optInt("poolSize", 10);
+        if (pool < 0 && settings != null && settings.has("cpuPoolSize")) {
+            pool = settings.optInt("cpuPoolSize", 10);
+        }
+        if (pool > 0) {
+            if (pool > 256) pool = 256;
+            scalars.put("cpu-pool-size", String.valueOf(pool));
+        }
+        String pref = root.optString("installDir", "");
+        if (pref != null && pref.length() > 0) scalars.put("pref-path", pref);
+    }
+
+    // ------------------------- auxiliares de traducao -------------------------
+
+    private static void putInt(Map<String, String> scalars, JSONObject settings,
+                               String ymlKey, String jsonKey, int dflt, int min, int max) {
+        if (!settings.has(jsonKey)) return;
+        int v = settings.optInt(jsonKey, dflt);
+        if (v < min) v = min;
+        if (v > max) v = max;
+        scalars.put(ymlKey, String.valueOf(v));
+    }
+
+    /** sys-lang/current-ime-lang compartilham a enum de 0..19. */
+    private static void putLang(Map<String, String> scalars, JSONObject settings,
+                                String ymlKey, String jsonKey) {
+        putInt(scalars, settings, ymlKey, jsonKey, 1, 0, 19);
+    }
+
+    /**
+     * Acoes do teclado gravadas por versoes antigas do app, que usavam o nome
+     * curto ("cross"). O config.yml de hoje usa "keyboard-button-cross". Devolve
+     * null para uma acao que nao existe no config.yml, para nao criar chaves
+     * invalidas no arquivo da engine.
+     */
+    private static String kbdAction(String raw) {
+        if (raw == null || raw.length() == 0) return null;
+        String a = raw;
+        if (a.startsWith("keyboard-")) a = a.substring("keyboard-".length());
+        if (a.indexOf("button-") == 0 || a.indexOf("leftstick-") == 0 || a.indexOf("rightstick-") == 0
+                || a.indexOf("gui-") == 0 || a.indexOf("toggle-") == 0 || a.indexOf("take-") == 0
+                || a.indexOf("pinch-") == 0 || a.indexOf("alternate-") == 0) {
+            return a;
+        }
+        // Nome curto: buttons, sticks e os atalhos que existiam na versao antiga.
+        String[] buttons = { "cross", "circle", "square", "triangle", "up", "down", "left", "right",
+            "l1", "r1", "l2", "r2", "l3", "r3", "start", "select", "psbutton" };
+        for (int i = 0; i < buttons.length; i++) {
+            if (buttons[i].equals(a)) return "button-" + a;
+        }
+        String[] others = { "leftstick-left", "leftstick-right", "leftstick-up", "leftstick-down",
+            "rightstick-left", "rightstick-right", "rightstick-up", "rightstick-down",
+            "gui-fullscreen", "gui-toggle-touch", "toggle-texture-replacement", "take-screenshot",
+            "pinch-modifier", "alternate-pinch-in", "alternate-pinch-out" };
+        for (int i = 0; i < others.length; i++) {
+            if (others[i].equals(a)) return a;
+        }
+        return null;
+    }
+
+    /**
+     * A engine le scancodes do SDL pelo nome ("KeyQ", "ShiftRight") e "Unbound"
+     * quando nao ha tecla. O app gravava nomes de teclado de PC ("X",
+     * "Right Shift"), que a engine nao reconhece.
+     */
+    private static String scancode(String raw) {
+        if (raw == null) return "Unbound";
+        String v = raw.trim();
+        if (v.length() == 0) return "Unbound";
+        if ("None".equals(v)) return "Unbound";
+        if ("Enter".equals(v)) return "Return";
+        if ("Shift".equals(v)) return "ShiftLeft";
+        if ("Right Shift".equals(v)) return "ShiftRight";
+        if ("Left Shift".equals(v)) return "ShiftLeft";
+        if ("Control".equals(v)) return "ControlLeft";
+        if ("Right Control".equals(v)) return "ControlRight";
+        if ("Left Control".equals(v)) return "ControlLeft";
+        if ("Alt".equals(v)) return "AltLeft";
+        if ("Right Alt".equals(v)) return "AltRight";
+        if ("Left Alt".equals(v)) return "AltLeft";
+        if (v.length() == 1) {
+            char c = v.charAt(0);
+            if (c >= 'A' && c <= 'Z') return "Key" + c;
+            if (c >= 'a' && c <= 'z') return "Key" + Character.toUpperCase(c);
+            if (c >= '0' && c <= '9') return v;
+        }
+        return v;
+    }
+
+    /** "#rrggbb" (ou "rrggbb") para o inteiro que a engine le. */
+    private static long colorInt(String hex) {
+        if (hex == null) return 0L;
+        String h = hex.trim();
+        if (h.startsWith("#")) h = h.substring(1);
+        if (h.length() != 6) return 0L;
+        try {
+            return Long.parseLong(h, 16) & 0xFFFFFFL;
+        } catch (NumberFormatException e) {
+            return 0L;
+        }
+    }
+
+    /** "255,0,0" (ou uma lista) para o bloco YAML [r, g, b]. */
+    private static String[] rgbList(String raw) {
+        if (raw == null) return new String[0];
+        String[] parts = raw.split(",");
+        String[] out = new String[3];
+        int n = 0;
+        for (int i = 0; i < parts.length && n < 3; i++) {
+            try {
+                int v = Integer.parseInt(parts[i].trim());
+                if (v < 0) v = 0;
+                if (v > 255) v = 255;
+                out[n++] = String.valueOf(v);
+            } catch (NumberFormatException e) {
+                // ignora o campo invalido e segue
+            }
+        }
+        if (n == 0) return new String[0];
+        String[] sized = new String[n];
+        System.arraycopy(out, 0, sized, 0, n);
+        return sized;
+    }
+
+    /** JSON array (ou texto separado por virgula) para o bloco de lista. */
+    private static String[] intArray(Object raw, int max) {
+        if (raw == null) return new String[0];
+        List<Integer> vals = new ArrayList<Integer>();
+        if (raw instanceof JSONArray) {
+            JSONArray a = (JSONArray) raw;
+            for (int i = 0; i < a.length() && vals.size() < max; i++) {
+                int v = a.optInt(i, 0);
+                if (v < 0) v = 0;
+                vals.add(v);
+            }
+        } else {
+            String s = String.valueOf(raw);
+            String[] parts = s.split(",");
+            for (int i = 0; i < parts.length && vals.size() < max; i++) {
+                try {
+                    int v = Integer.parseInt(parts[i].trim());
+                    if (v < 0) v = 0;
+                    vals.add(v);
+                } catch (NumberFormatException e) {
+                    // ignora
+                }
+            }
+        }
+        return toStringArray(vals);
+    }
+
+    private static String[] strArray(Object raw) {
+        if (raw == null) return new String[0];
+        List<String> vals = new ArrayList<String>();
+        if (raw instanceof JSONArray) {
+            JSONArray a = (JSONArray) raw;
+            for (int i = 0; i < a.length(); i++) {
+                String v = a.optString(i, "").trim();
+                if (v.length() > 0) vals.add(v);
+            }
+        } else {
+            String[] parts = String.valueOf(raw).split(",");
+            for (int i = 0; i < parts.length; i++) {
+                String v = parts[i].trim();
+                if (v.length() > 0) vals.add(v);
+            }
+        }
+        return vals.toArray(new String[vals.size()]);
+    }
+
+    private static String[] toStringArray(List<Integer> vals) {
+        String[] out = new String[vals.size()];
+        for (int i = 0; i < vals.size(); i++) out[i] = String.valueOf(vals.get(i));
+        return out;
+    }
+
+    /**
+     * Aba Grafico: traduz as opcoes dos baloes da tela de configuracoes para as
+     * chaves do config.yml da engine. Sem esta traducao os botoes gravavam no
+     * config.json e a engine continuava booting com o valor do template.
+     *
+     * So entram chaves que ja existem no config.yml (o patchYaml() reescreve
+     * linhas existentes e nao insere novas) e valores sao filtrados antes: um
+     * valor invalido faria a engine cair no padrao sem avisar.
+     */
+    private void readGraphicsOverrides(JSONObject settings, Map<String, String> scalars) {
+        // Baloes com chave liga/desliga (async pipeline, surface sync, caches,
+        // texturas, SPIR-V, FPS hack).
+        putBool(scalars, settings, "disable-surface-sync", "disableSurfaceSync", false);
+        putBool(scalars, settings, "async-pipeline-compilation", "asyncPipelineCompilation", true);
+        putBool(scalars, settings, "texture-cache", "textureCache", true);
+        putBool(scalars, settings, "hashless-texture-cache", "hashlessTextureCache", false);
+        putBool(scalars, settings, "import-textures", "importTextures", false);
+        putBool(scalars, settings, "export-textures", "exportTextures", false);
+        putBool(scalars, settings, "export-as-png", "exportAsPng", true);
+        putBool(scalars, settings, "shader-cache", "shaderCache", true);
+        putBool(scalars, settings, "spirv-shader", "spirvShader", false);
+        putBool(scalars, settings, "fps-hack", "fpsHack", false);
+        putBool(scalars, settings, "v-sync", "vSync", true);
+        putInt(scalars, settings, "gpu-idx", "gpuIdx", 0, 0, 15);
+        putBool(scalars, settings, "validation-layer", "validationLayer", false);
+
+        // Driver Vulkan especifico. Vazio = deixa a engine escolher.
+        if (settings.has("customDriverName")) {
+            scalars.put("custom-driver-name", settings.optString("customDriverName", "").trim());
+        }
+
+        // Internal Resolution Upscaling (slider 1x..4x): a engine le float.
+        if (settings.has("resolutionMultiplier")) {
+            double m = settings.optDouble("resolutionMultiplier", 1.0d);
+            if (m < 1.0d) m = 1.0d;
+            if (m > 4.0d) m = 4.0d;
+            scalars.put("resolution-multiplier", String.valueOf(Math.round(m * 100.0d) / 100.0d));
+        }
+
+        // Filtragem anisotropica (abas 1x 2x 4x 8x 16x).
+        if (settings.has("anisotropicFiltering")) {
+            int a = settings.optInt("anisotropicFiltering", 1);
+            if (a != 2 && a != 4 && a != 8 && a != 16) a = 1;
+            scalars.put("anisotropic-filtering", String.valueOf(a));
+        }
+
+        // Memory Mapping (abas Disable / Double Buffer / Page Table / Native Buffer).
+        if (settings.has("memoryMapping")) {
+            String mapping = normalizeMemoryMapping(settings.optString("memoryMapping", ""));
+            if (mapping != null) scalars.put("memory-mapping", mapping);
+        }
+    }
+
+    private static void putBool(Map<String, String> scalars, JSONObject settings,
+                                String ymlKey, String jsonKey, boolean dflt) {
+        if (!settings.has(jsonKey)) return;
+        boolean v;
+        Object raw = settings.opt(jsonKey);
+        if (raw instanceof Boolean) {
+            v = ((Boolean) raw).booleanValue();
+        } else if (raw instanceof String) {
+            v = Boolean.parseBoolean((String) raw);
+        } else {
+            v = settings.optBoolean(jsonKey, dflt);
+        }
+        scalars.put(ymlKey, v ? "true" : "false");
+    }
+
+    /**
+     * A engine compara memory-mapping por nome. config.json pode ter os nomes
+     * antigos (double-buffer, triple-buffer, streaming) e esses nao existem
+     * mais: caem no primeiro metodo valido em vez de sumirem do balao.
+     */
+    private static String normalizeMemoryMapping(String raw) {
+        String v = raw == null ? "" : raw.trim().toLowerCase();
+        if (v.equals("disabled") || v.equals("disable") || v.equals("none")
+                || v.equals("off") || v.equals("false") || v.isEmpty()) {
+            return "Disabled";
+        }
+        if (v.equals("page-table") || v.equals("page table") || v.equals("pagetable")) {
+            return "Page Table";
+        }
+        if (v.equals("native-buffer") || v.equals("native buffer") || v.equals("nativebuffer")) {
+            return "Native Buffer";
+        }
+        // double-buffer, triple-buffer, streaming e qualquer valor desconhecido.
+        return "Double buffer";
+    }
+
+    /**
+     * das globais de proposito: quem manda e o ajuste especifico do jogo.
+     *
+     * Só entram chaves que ja existem no config.yml, porque o patchYaml()
+     * reescreve linhas existentes e nao insere chaves novas. Uma chave
+     * inventada aqui seria aceita em silencio e nunca teria efeito.
+     */
+    private void readTitleOverrides(JSONObject root, Map<String, String> scalars) {
+        try {
+            JSONObject all = root.optJSONObject("titleOverrides");
+            if (all == null) return;
+            String tid = getIntent() == null ? null : getIntent().getStringExtra(EXTRA_TITLE_ID);
+            if (tid == null || tid.isEmpty()) tid = currentGameId;
+            if (tid == null || tid.isEmpty()) return;
+            JSONObject ov = all.optJSONObject(tid);
+            if (ov == null) return;
+
+            if (ov.has("resolutionMultiplier")) {
+                int m = ov.optInt("resolutionMultiplier", 1);
+                if (m < 1) m = 1;
+                if (m > 2) m = 2;
+                scalars.put("resolution-multiplier", String.valueOf(m));
+            }
+            if (ov.has("vSync")) {
+                scalars.put("v-sync", ov.optBoolean("vSync", true) ? "true" : "false");
+            }
+            if (ov.has("performanceOverlay")) {
+                scalars.put("performance-overlay", ov.optBoolean("performanceOverlay", false) ? "true" : "false");
+            }
+            if (ov.has("screenFilter")) {
+                String sf = ov.optString("screenFilter", "");
+                if ("Nearest".equals(sf) || "Bilinear".equals(sf) || "Bicubic".equals(sf)
+                        || "FXAA".equals(sf) || "FSR".equals(sf)) {
+                    scalars.put("screen-filter", sf);
+                }
+            }
+            if (ov.has("audioVolume")) {
+                int vol = ov.optInt("audioVolume", 100);
+                if (vol < 0) vol = 0;
+                if (vol > 150) vol = 150;
+                scalars.put("audio-volume", String.valueOf(vol));
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "titleOverrides ignorado", t);
+        }
+    }
+
     // ------------------------- YAML basico (patch idempotente) -------------------------
+
+    /**
+     * Chaves que a build da engine embarcada nao consegue ler. Qualquer valor
+     * delas derruba o config.yml inteiro, entao sao removidas do arquivo a cada
+     * boot (inclusive de quem ja tinha o app instalado antes desta correcao).
+     *
+     * "adhoc-addr" e o caso conhecido: a engine loga
+     * "yaml-cpp: error at line N, column 13: bad conversion" para int, string,
+     * lista e nulo. O upstream declara a chave como int, mas a build Android
+     * embarcada nao converte. Como o app nunca usa ad-hoc, basta nao escrever.
+     */
+    private static final Set<String> UNPARSABLE_KEYS = new HashSet<String>(
+            Arrays.asList("adhoc-addr"));
+
+    private static String dropUnparsableKeys(String text) {
+        List<String> lines = new ArrayList<String>();
+        for (String l : text.split("\n", -1)) lines.add(l);
+        List<String> out = new ArrayList<String>();
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            if (isKeyLine(line) && UNPARSABLE_KEYS.contains(keyOf(line))) {
+                // Pula tambem o bloco indentado que possa vir abaixo.
+                i++;
+                while (i < lines.size()) {
+                    String n = lines.get(i);
+                    if (n.length() > 0 && (n.charAt(0) == ' ' || n.charAt(0) == '\t')) i++;
+                    else break;
+                }
+                i--;
+                continue;
+            }
+            out.add(line);
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int k = 0; k < out.size(); k++) {
+            if (k > 0) sb.append('\n');
+            sb.append(out.get(k));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * A engine le strings com aspas; sem elas um campo apagado na tela viraria
+     * um null do YAML, que a engine nao converte em string vazia.
+     */
+    private static String yamlValue(String val) {
+        if (val == null || val.length() == 0) return "\"\"";
+        return val;
+    }
 
     private static boolean isKeyLine(String line) {
         return line.length() > 0
@@ -468,8 +1034,8 @@ public class EngineActivity extends SDLActivity {
                             || lines.get(i).charAt(0) == '\t')) i++;
                     continue;
                 }
-                if (scalars.containsKey(key) && !doneSa.contains(key)) {
-                    String val = scalars.get(key);
+                if (scalars.containsKey(key) && !lists.containsKey(key) && !doneSa.contains(key)) {
+                    String val = yamlValue(scalars.get(key));
                     String target = key + ": " + val;
                     out.add(target);
                     if (!line.trim().equals(key + ": " + val)) changed = true;
@@ -487,7 +1053,8 @@ public class EngineActivity extends SDLActivity {
 
         // chaves pedidas que nao existiam no arquivo vao apensadas
         for (String key : scalars.keySet()) {
-            if (!doneSa.contains(key)) { out.add(key + ": " + scalars.get(key)); changed = true; }
+            if (lists.containsKey(key)) continue;
+            if (!doneSa.contains(key)) { out.add(key + ": " + yamlValue(scalars.get(key))); changed = true; }
         }
         for (String key : lists.keySet()) {
             if (!doneLi.contains(key)) { out.add(listBlock(key, lists.get(key))); changed = true; }
@@ -604,6 +1171,7 @@ public class EngineActivity extends SDLActivity {
         memSampling = true;
         memSampler = new Thread(new Runnable() {
             public void run() {
+                int tick = 0;
                 while (memSampling) {
                     try {
                         android.os.Debug.MemoryInfo mi = new android.os.Debug.MemoryInfo();
@@ -615,8 +1183,13 @@ public class EngineActivity extends SDLActivity {
                                 + " swapPss=" + (mi.getTotalSwappablePss() >> 10) + "MB"
                                 + " javaUsed=" + ((rt.totalMemory() - rt.freeMemory()) >> 20) + "MB"
                                 + " javaMax=" + (rt.maxMemory() >> 20) + "MB");
+                        // Mapa por regiao: mostra se o processo cresce por um
+                        // unico bloco gigante (leitura de PFS/psarc) ou por
+                        // milhares de alocacoes pequenas (vazamento em container).
+                        if (tick == 2 || tick == 6) AppLog.step(dumpMappings());
                     } catch (Throwable ignore) {
                     }
+                    tick++;
                     try {
                         Thread.sleep(400);
                     } catch (InterruptedException e) {
@@ -626,6 +1199,47 @@ public class EngineActivity extends SDLActivity {
             }
         }, "rpcsv-mem-sampler");
         memSampler.start();
+    }
+
+    /**
+     * Le /proc/self/smaps e devolve as maiores regiaoes por Rss, com o nome do
+     * objeto quando houver. So para diagnostico: some em varios minutos de log.
+     */
+    private static String dumpMappings() {
+        StringBuilder sb = new StringBuilder("  smaps: ");
+        try {
+            java.io.BufferedReader r = new java.io.BufferedReader(
+                    new java.io.FileReader("/proc/self/smaps"), 65536);
+            String name = "";
+            long rss = 0;
+            int shown = 0;
+            String line;
+            while ((line = r.readLine()) != null) {
+                if (line.length() > 0 && Character.digit(line.charAt(0), 16) >= 0
+                        && line.indexOf('-') > 0) {
+                    if (rss > 32L * 1024 * 1024 && shown < 12) {
+                        sb.append('[').append(name.length() > 40 ? name.substring(0, 40) : name)
+                                .append(" rss=").append(rss >> 20).append("MB] ");
+                        shown++;
+                    }
+                    int sp = line.indexOf(' ');
+                    name = line.length() > 0 ? line.substring(Math.max(0, line.indexOf(' ') + 5)) : "";
+                    if (name.length() > 0) name = name.trim();
+                    if (name.length() == 0) name = "anon";
+                    rss = 0;
+                } else if (line.startsWith("Rss:")) {
+                    rss += Long.parseLong(line.replaceAll("[^0-9]", ""));
+                }
+            }
+            r.close();
+            try {
+                sb.append(" nativeHeap=").append(android.os.Debug.getNativeHeapAllocatedSize() >> 20).append("MB");
+            } catch (Throwable ignore) {
+            }
+        } catch (Throwable t) {
+            sb.append("falhou: ").append(t);
+        }
+        return sb.toString();
     }
 
     private void stopMemSampler() {
@@ -890,6 +1504,9 @@ public class EngineActivity extends SDLActivity {
         Intent intent = getIntent();
         String[] args = intent != null ? intent.getStringArrayExtra(APP_RESTART_PARAMETERS) : null;
         if (args == null) args = new String[0];
+        AppLog.step("getArguments -> " + java.util.Arrays.toString(args)
+                + " extras=" + (intent == null || intent.getExtras() == null ? "null"
+                        : intent.getExtras().keySet().toString()));
         return args;
     }
 

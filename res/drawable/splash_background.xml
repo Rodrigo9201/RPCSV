@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Splash do Android nativo: fundo preto + marca centralizada.
+     Existe para cobrir a janela entre o lancador e o primeiro frame do
+     WebView. Sem isso o usuario ve um retangulo preto vazio. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@android:color/black" />
+    <item android:gravity="center">
+        <bitmap
+            android:src="@drawable/rpcsv_mark"
+            android:gravity="center" />
+    </item>
+</layer-list>

@@ -1,5 +1,16 @@
 <resources>
+    <!-- AppTheme: fundo preto + marca, para nao piscar um retangulo vazio
+         antes do primeiro frame do WebView. -->
     <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@drawable/splash_background</item>
+        <item name="android:statusBarColor">#000000</item>
+        <item name="android:navigationBarColor">#000000</item>
+        <item name="android:windowDisablePreview">false</item>
+    </style>
+
+    <!-- A EngineActivity nao mostra a marca: ela desenha o jogo em tela
+         cheia, e o frame de preview so apareceria por cima da imagem. -->
+    <style name="GameTheme" parent="@android:style/Theme.Material.NoActionBar.Fullscreen">
         <item name="android:windowBackground">#000000</item>
         <item name="android:statusBarColor">#000000</item>
         <item name="android:navigationBarColor">#000000</item>

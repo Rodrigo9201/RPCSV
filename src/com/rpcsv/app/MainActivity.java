@@ -409,6 +409,42 @@ public class MainActivity extends Activity {
                 bus.reply(id, PkgExtractor.readParamTitle(arg(a, "path", "")));
                 return;
             }
+            case "appInfo": {
+                final String aid = arg(a, "path", "");
+                final String ridI = id;
+                // Fora da UI thread: dirSize() percorre a arvore inteira e um
+                // jogo de varios GB travaria a interface.
+                Thread t = new Thread(new Runnable() {
+                    public void run() {
+                        bus.reply(ridI, appInfoJson(aid));
+                    }
+                }, "rpcsv-appinfo");
+                t.setDaemon(true);
+                t.start();
+                return;
+            }
+            case "deleteApp": {
+                final String dpath = arg(a, "path", "");
+                final String ridD = id;
+                Thread t = new Thread(new Runnable() {
+                    public void run() {
+                        try {
+                            File d = new File(dpath);
+                            if (!d.isDirectory()) {
+                                bus.reply(ridD, err("pasta do app nao encontrada"));
+                                return;
+                            }
+                            deleteTree(d);
+                            bus.reply(ridD, ok());
+                        } catch (Throwable e) {
+                            bus.reply(ridD, err(String.valueOf(e.getMessage())));
+                        }
+                    }
+                }, "rpcsv-delapp");
+                t.setDaemon(true);
+                t.start();
+                return;
+            }
             case "base64File": {
                 final String b64path = arg(a, "path", "");
                 final String rid2 = id;
@@ -714,7 +750,23 @@ Thread t = new Thread(new Runnable() {
                                     + " isFile=" + pf.isFile()
                                     + " len=" + pf.length()
                                     + " base=" + base);
-                            Map<String, Object> m = PkgExtractor.install(ppath, zrif, wbin, base);
+                            // Cada atualizacao vira um evento "install:progress".
+                            // A UI recebe assim um byte a byte em vez de ficar
+                            // parada ate o processo inteiro terminar.
+                            PkgExtractor.ProgressListener pl =
+                                    new PkgExtractor.ProgressListener() {
+                                        public void onProgress(final String phase, final long done, final long total) {
+                                            try {
+                                                JSONObject p = new JSONObject();
+                                                p.put("phase", phase);
+                                                p.put("done", done);
+                                                p.put("total", total);
+                                                bus.event("install:progress", p);
+                                            } catch (Exception ignore) {
+                                            }
+                                        }
+                                    };
+                            Map<String, Object> m = PkgExtractor.install(ppath, zrif, wbin, base, pl);
                             JSONObject r = new JSONObject();
                             for (Map.Entry<String, Object> e : m.entrySet()) r.put(e.getKey(), e.getValue());
                             bus.reply(rid, r);
@@ -751,6 +803,10 @@ Thread t = new Thread(new Runnable() {
                     Intent i = new Intent(this, EngineActivity.class);
                     i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
                     i.putExtra("AppStartParameters", new String[] { "-r", titleId });
+                    // A engine le este extra ao montar o config.yml, para
+                    // aplicar os ajustes salvos para este titulo e nao os
+                    // globais de outro app.
+                    i.putExtra(EngineActivity.EXTRA_TITLE_ID, titleId);
                     startActivity(i);
                     bus.reply(id, ok());
                 } catch (Exception e) {
@@ -1252,6 +1308,72 @@ Thread t = new Thread(new Runnable() {
     }
 
     /** Le um PNG para base64, ou null se nao existir/nao for PNG/grandes demais. */
+    /** Remove uma arvore de arquivos. Silencioso em no-arquivos. */
+    private static void deleteTree(File f) {
+        if (f == null || !f.exists()) return;
+        if (f.isDirectory()) {
+            File[] kids = f.listFiles();
+            if (kids != null) {
+                for (int i = 0; i < kids.length; i++) deleteTree(kids[i]);
+            }
+        }
+        if (!f.delete() && f.exists()) {
+            f.deleteOnExit();
+        }
+    }
+
+    /** Soma o tamanho em bytes de uma arvore, sem materializar nada. */
+    private static long dirSize(File d) {
+        long total = 0;
+        if (d == null || !d.exists()) return 0;
+        if (d.isFile()) return d.length();
+        File[] kids = d.listFiles();
+        if (kids == null) return 0;
+        for (int i = 0; i < kids.length; i++) {
+            File k = kids[i];
+            total += k.isDirectory() ? dirSize(k) : k.length();
+        }
+        return total;
+    }
+
+    /**
+     * Metadados de um app instalado, para a aba "Info". Campos ausentes no
+     * param.sfo voltam vazios: e melhor uma linha em branco do que a tela
+     * inteira quebrada por um PKG de PS Vita mais antigo.
+     */
+    private static JSONObject appInfoJson(String appDir) {
+        JSONObject o = new JSONObject();
+        File dir = new File(appDir);
+        if (!dir.isDirectory()) return err("pasta do app nao encontrada");
+        String sfo = new File(dir, "sce_sys/param.sfo").getPath();
+        java.util.Map<String, Object> m = PkgExtractor.readParamInfo(sfo);
+        put(o, "title", sfoStr(m, "TITLE", "TITLE_00"));
+        put(o, "titleId", sfoStr(m, "TITLE_ID"));
+        put(o, "version", sfoStr(m, "VERSION"));
+        put(o, "contentId", sfoStr(m, "CONTENT_ID"));
+        put(o, "category", sfoStr(m, "CATEGORY"));
+        put(o, "publisher", sfoStr(m, "PUBLISHER_NAME", "PUBLISHER"));
+        put(o, "description", sfoStr(m, "LONG_DESCRIPTION", "DESCRIPTION"));
+        put(o, "releaseDate", sfoStr(m, "RELEASE_DATE"));
+        put(o, "size", dirSize(dir));
+        put(o, "installed", dir.lastModified());
+        put(o, "path", dir.getPath());
+        put(o, "hasIcon", new File(dir, "sce_sys/icon0.png").isFile());
+        put(o, "hasEboot", new File(dir, "eboot.bin").isFile());
+        put(o, "hasPbp", new File(dir, "EBOOT.PBP").isFile());
+        return o;
+    }
+
+    private static String sfoStr(java.util.Map<String, Object> m, String... keys) {
+        for (int i = 0; i < keys.length; i++) {
+            Object v = m.get(keys[i]);
+            if (v == null) continue;
+            String s = String.valueOf(v).replace("\u0000", "").trim();
+            if (!s.isEmpty()) return s;
+        }
+        return "";
+    }
+
     private static String readPngAsBase64(File f) {
         if (!f.isFile() || f.length() <= 8 || f.length() > MAX_BASE64_FILE) return null;
         FileInputStream in = null;
@@ -1664,25 +1786,29 @@ Thread t = new Thread(new Runnable() {
         if (id == null) return;
         try {
             final Uri uri = data.getData();
+            if (uri == null) { bus.reply(id, null); return; }
+            try {
+                getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (Exception ignore) {}
+            lastPickedUri = uri;
+
+            // SAF entrega um content:// para o mesmo arquivo do /sdcard. Quando
+            // ele tem caminho de verdade, devolver esse caminho e' o que evita
+            // copiar gigabytes para getFilesDir() antes de so responder.
+            String real = realPathFor(uri);
+            if (real != null) {
+                uriByPath.put(real, uri.toString());
+                bus.reply(id, real);
+                return;
+            }
+
             String name = queryDisplayName(uri);
             name = (name == null || name.isEmpty()) ? ("import_" + System.currentTimeMillis()) : name;
             name = name.replaceAll("[\\\\/]", "_");
             File dir = new File(getFilesDir(), "importer");
             dir.mkdirs();
             final File out = new File(dir, name);
-            try {
-                getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            } catch (Exception ignore) {}
-            lastPickedUri = uri;
             uriByPath.put(out.getAbsolutePath(), uri.toString());
-            try {
-                String docId = DocumentsContract.getDocumentId(uri);
-                String[] dp = docId.split(":", 2);
-                String b2 = "primary".equals(dp[0]) ? "/storage/emulated/0" : "/storage/" + dp[0];
-                String rl = dp.length > 1 ? dp[1] : "";
-                String real = rl.isEmpty() ? b2 : b2 + "/" + rl;
-                uriByPath.put(real, uri.toString());
-            } catch (Exception ignore) {}
             final String rid = id;
             Thread t = new Thread(new Runnable() {
                 public void run() {
@@ -1690,7 +1816,7 @@ Thread t = new Thread(new Runnable() {
                         InputStream in = getContentResolver().openInputStream(uri);
                         if (in == null) { bus.reply(rid, null); return; }
                         OutputStream os = new FileOutputStream(out);
-                        byte[] b = new byte[65536];
+                        byte[] b = new byte[262144];
                         int r;
                         while ((r = in.read(b)) > 0) os.write(b, 0, r);
                         os.close();
@@ -1706,6 +1832,41 @@ Thread t = new Thread(new Runnable() {
         } catch (Exception e) {
             bus.reply(id, null);
         }
+    }
+
+    /**
+     * Caminho real e legivel por tras de um SAF uri, ou null quando o
+     * provider so oferece stream (Drive, cloud, providers sem file path).
+     */
+    private String realPathFor(Uri uri) {
+        try {
+            String p = null;
+            if ("file".equals(uri.getScheme())) {
+                p = uri.getPath();
+            } else {
+                String docId = DocumentsContract.getDocumentId(uri);
+                if (docId != null && docId.length() > 0) {
+                    if (docId.startsWith("raw:")) {
+                        p = docId.substring(4);
+                    } else {
+                        int c = docId.indexOf(':');
+                        if (c > 0) {
+                            String vol = docId.substring(0, c);
+                            String rel = docId.substring(c + 1);
+                            String base = "primary".equals(vol) ? "/storage/emulated/0" : "/storage/" + vol;
+                            p = rel.isEmpty() ? base : base + "/" + rel;
+                        } else {
+                            p = docId;
+                        }
+                    }
+                }
+            }
+            if (p != null && p.length() > 0) {
+                File f = new File(p);
+                if (f.isFile() && f.canRead()) return f.getAbsolutePath();
+            }
+        } catch (Exception ignore) {}
+        return null;
     }
 
     private String queryDisplayName(Uri uri) {

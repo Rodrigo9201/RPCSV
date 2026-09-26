@@ -29,7 +29,7 @@ hashless-texture-cache: false
 import-textures: false
 export-textures: false
 export-as-png: true
-memory-mapping: double-buffer
+memory-mapping: Double buffer
 boot-apps-full-screen: true
 show-live-area-screen: false
 audio-backend: SDL
@@ -137,7 +137,6 @@ http-timeout-attempts: 50
 http-timeout-sleep-ms: 100
 http-read-end-attempts: 10
 http-read-end-sleep-ms: 250
-adhoc-addr: 0
 front-camera-type: 2
 front-camera-id: ""
 front-camera-image: ""
