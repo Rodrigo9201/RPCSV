@@ -1,0 +1,1335 @@
+<!DOCTYPE html>
+<html lang="pt-BR" dir="ltr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:;" />
+  <title>RPCSV</title>
+  <link rel="stylesheet" href="css/vita.css" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- ============ BOOT ============
+         Aparece no HTML (nao criado por JS) de proposito: `boot()` so pode
+         desenhar depois de varios `await` na ponte nativa, e qualquer um
+         desses que nao resolver deixava o app em uma tela preta sem
+         nenhuma pista do que aconteceu. Este bloco e a primeira coisa
+         visivel, entao o usuario ve o boot mesmo no pior caso. -->
+    <section id="screen-boot" class="screen boot active">
+      <div class="boot-inner">
+        <img class="boot-mark" src="brand/rpcsv-mark.png" alt="RPCSV" />
+        <div class="boot-name">RPCSV</div>
+        <div class="boot-bar"><i></i></div>
+      </div>
+      <audio id="boot-audio" src="brand/boot.wav" preload="auto"></audio>
+    </section>
+
+    <!-- ============ WIZARD (first boot) ============ -->
+    <section id="screen-wizard" class="screen wizard inactive">
+      <!-- Welcome -->
+      <div class="wz-step" data-step="welcome" data-active="true">
+        <div class="wz-center">
+          <div class="rpcsv-logo">
+            <span class="logo-dots"></span>
+            <span class="logo-text">RPCSV</span>
+          </div>
+          <h1 class="wz-title" data-i18n="welcome_title">Bem-vindo ao PlayStation&reg;Vita</h1>
+          <p class="wz-sub" data-i18n="welcome_sub">Um emulador com o layout original do console. Configure seu sistema para começar.</p>
+          <button class="btn btn-primary" id="wz-welcome-next" data-i18n="welcome_start">Iniciar</button>
+        </div>
+      </div>
+
+      <!-- Language -->
+      <div class="wz-step" data-step="lang">
+        <div class="wz-center">
+          <h1 class="wz-title" data-i18n="lang_title">Escolha o Idioma</h1>
+          <p class="wz-sub" data-i18n="lang_sub">O sistema usa o idioma selecionado.</p>
+          <ul id="lang-list" class="lang-list"></ul>
+        </div>
+      </div>
+
+      <!-- Firmware -->
+      <div class="wz-step" data-step="fw">
+        <div class="wz-center">
+          <h1 class="wz-title" data-i18n="fw_title">Atualização do Sistema</h1>
+          <p class="wz-sub" data-i18n="fw_sub">Baixe e instale o firmware e a atualização do software do sistema PS Vita.</p>
+          <div class="fw-status" id="fw-status">
+            <div class="fw-ver" id="fw-ver">--</div>
+            <div id="fw-bar-wrap" class="fw-bar-wrap hidden">
+              <div class="fw-bar" id="fw-bar"><span id="fw-bar-fill"></span></div>
+              <div class="fw-meta" id="fw-meta"></div>
+            </div>
+          </div>
+          <div class="fw-actions">
+            <button class="btn btn-primary" id="fw-dl-btn" data-i18n="fw_download">Baixar e instalar</button>
+            <button class="btn" id="fw-manual-btn" data-i18n="fw_manual">Instalar arquivo .PUP manualmente</button>
+            <button class="btn btn-ghost" id="fw-site-btn" data-i18n="fw_site">Baixar no site oficial</button>
+            <button class="btn btn-primary hidden" id="fw-next-btn" data-i18n="fw_next">Próximo</button>
+          </div>
+          <div class="fw-extras hidden" id="fw-extras">
+            <div class="fw-extra-label" data-i18n="fw_extra_title">Pacotes opcionais</div>
+            <div class="fw-extra" id="fw-extra-pre">
+              <div class="fw-extra-head">
+                <span class="fw-extra-name" data-i18n="fw_pre">Pacote de pré-instalação (recovery)</span>
+                <span class="fw-extra-size" id="fw-pre-size"></span>
+              </div>
+              <div class="fw-extra-row">
+                <button class="btn btn-sm" id="fw-pre-btn"></button>
+                <span class="fw-extra-state" id="fw-pre-state"></span>
+              </div>
+              <div class="fw-bar-wrap hidden" id="fw-pre-bar">
+                <div class="fw-bar"><span id="fw-pre-fill"></span></div>
+                <div class="fw-meta" id="fw-pre-meta"></div>
+              </div>
+            </div>
+            <div class="fw-extra" id="fw-extra-font">
+              <div class="fw-extra-head">
+                <span class="fw-extra-name" data-i18n="fw_font">Pacote de fontes (sa0)</span>
+                <span class="fw-extra-size" id="fw-font-size"></span>
+              </div>
+              <div class="fw-extra-row">
+                <button class="btn btn-sm" id="fw-font-btn"></button>
+                <span class="fw-extra-state" id="fw-font-state"></span>
+              </div>
+              <div class="fw-bar-wrap hidden" id="fw-font-bar">
+                <div class="fw-bar"><span id="fw-font-fill"></span></div>
+                <div class="fw-meta" id="fw-font-meta"></div>
+              </div>
+            </div>
+          </div>
+          <p class="wz-note" id="fw-err" data-i18n=""></p>
+        </div>
+      </div>
+
+      <!-- Install directory -->
+      <div class="wz-step" data-step="dir">
+        <div class="wz-center">
+          <h1 class="wz-title" data-i18n="dir_title">Diretório de Instalação</h1>
+          <p class="wz-sub" data-i18n="dir_sub">Escolha onde os jogos e dados serão instalados.</p>
+          <div class="dir-row">
+            <input id="dir-input" class="dir-input" readonly />
+            <button class="btn" id="dir-browse" data-i18n="dir_browse">Navegar...</button>
+          </div>
+          <div class="wz-actions">
+            <button class="btn btn-primary" id="dir-next" data-i18n="dir_next">Avançar</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ USER CREATION ============ -->
+    <section id="screen-user" class="screen user">
+      <div class="wz-center">
+        <h1 class="wz-title" data-i18n="user_title">Criação de Usuário</h1>
+        <p class="wz-sub" data-i18n="user_sub">Crie um usuário para o seu PS Vita.</p>
+        <div class="avatar-picker">
+          <div class="avatar-ring" id="avatar-ring">
+            <svg id="avatar-svg" viewBox="0 0 96 96"></svg>
+          </div>
+          <div class="avatar-controls">
+            <button class="btn btn-sm" id="avatar-prev">&#9664;</button>
+            <button class="btn btn-sm" id="avatar-next">&#9654;</button>
+          </div>
+        </div>
+        <div class="user-fields">
+          <label data-i18n="user_name_label">Nome do usuário</label>
+          <input id="user-name" class="dir-input" maxlength="14" value="RPCSV" />
+          <p class="wz-note">RPCSV &middot; <code>com.rpcsv.app</code></p>
+        </div>
+        <button class="btn btn-primary" id="user-create" data-i18n="user_create">Criar usuário</button>
+      </div>
+    </section>
+
+    <!-- ============ USER SELECT (boot) ============ -->
+    <section id="screen-userpick" class="screen userpick inactive">
+      <div class="userpick-inner">
+        <div class="userpick-head">
+          <div class="rpcsv-logo small"><span class="logo-text">RPCSV</span></div>
+          <h1 class="userpick-title" data-i18n="userpick_title">Selecionar usuário</h1>
+          <p class="userpick-sub" data-i18n="userpick_sub">Escolha um perfil para entrar no seu PS Vita.</p>
+        </div>
+        <div class="userpick-list" id="userpick-list"></div>
+      </div>
+    </section>
+
+    <!-- ============ LOCK SCREEN ============ -->
+    <section id="screen-lock" class="screen lock inactive">
+      <div class="lock-content">
+        <div class="lock-time">
+          <div class="lock-clock" id="lock-clock">--:--</div>
+          <div class="lock-date" id="lock-date"></div>
+        </div>
+        <div class="lock-user">
+          <div class="lock-avatar" id="lock-avatar"></div>
+          <div class="lock-uname" id="lock-uname"></div>
+        </div>
+      </div>
+      <div class="lock-handle" id="lock-handle">
+        <span data-i18n="lock_hint">Toque e arraste para cima para desbloquear</span>
+        <div class="lock-grip"></div>
+      </div>
+      <div class="lock-ripple" id="lock-ripple"></div>
+    </section>
+
+    <!-- ============ HOME ============ -->
+    <section id="screen-home" class="screen home inactive">
+
+      <header class="home-topbar">
+        <div class="top-left">
+          <div class="ps-btn" id="ps-menu-btn" title="Menu PS"><svg viewBox="0 0 24 24" width="18" height="18"><path d="M4 6h14v6H4zM4 15h14v3H4z" fill="currentColor"/></svg></div>
+        </div>
+        <nav class="top-actions" id="top-actions">
+          <button class="top-act" id="act-pkg" data-i18n="install_pkg">Instalar PKG + Chave</button>
+          <button class="top-act" id="act-zip" data-i18n="install_zip">Instalar ZIP</button>
+          <button class="top-act" id="act-vpk" data-i18n="install_vpk">Instalar VPK</button>
+          <button class="top-act act-settings" id="act-settings" data-i18n="settings">Configurações</button>
+        </nav>
+        <div class="top-right">
+          <span class="top-time" id="top-time">--:--</span>
+        </div>
+      </header>
+
+      <div class="home-mid" id="home-scroll">
+        <div id="pages" class="pages-v"></div>
+        <div class="home-hint" id="home-hint"></div>
+      </div>
+
+      <div class="pkg-menu" id="pkg-menu">
+        <button class="pkg-item" data-kind="pkg"><span class="pkg-ic" data-icon="pkg"></span><span data-i18n="install_pkg_full">PKG + Chave / zRIF</span></button>
+        <button class="pkg-item" data-kind="zip"><span class="pkg-ic" data-icon="zip"></span><span data-i18n="install_zip_full">Arquivo ZIP</span></button>
+        <button class="pkg-item" data-kind="vpk"><span class="pkg-ic" data-icon="vpk"></span><span data-i18n="install_vpk_full">Arquivo VPK</span></button>
+      </div>
+      <div class="ps-menu" id="ps-menu">
+        <button class="ps-item" id="ps-library" data-icon="games"><span data-i18n="ps_library">Biblioteca de jogos</span></button>
+        <button class="ps-item" id="ps-firmware" data-icon="fw"><span data-i18n="ps_firmware">Firmware do sistema</span></button>
+        <button class="ps-item" id="ps-users" data-icon="user"><span data-i18n="ps_switch_user">Trocar de usuário</span></button>
+        <button class="ps-item" id="ps-settings" data-icon="settings"><span data-i18n="settings">Configurações</span></button>
+        <button class="ps-item" id="ps-shutdown" data-icon="power"><span data-i18n="ps_shutdown">Desligar</span></button>
+      </div>
+    </section>
+
+    <!-- ============ SETTINGS ============ -->
+    <section id="screen-settings" class="screen settings inactive">
+      <header class="sub-header">
+        <button class="btn-back" id="settings-back">&#9664;</button>
+        <h1 data-i18n="settings_title">Configurações</h1>
+        <span class="sub-spacer"></span>
+      </header>
+      <div class="settings-body">
+        <div class="settings-nav">
+          <button class="set-tab active" data-tab="core" data-i18n="set_core">Core</button>
+          <button class="set-tab" data-tab="cpu" data-i18n="set_cpu">CPU</button>
+          <button class="set-tab" data-tab="graphics" data-i18n="set_graphics">Gráficos</button>
+          <button class="set-tab" data-tab="audio" data-i18n="set_audio">Áudio</button>
+          <button class="set-tab" data-tab="camera" data-i18n="set_camera">Câmera</button>
+          <button class="set-tab" data-tab="system" data-i18n="set_system">Sistema</button>
+          <button class="set-tab" data-tab="controls" data-i18n="set_controls">Controles</button>
+          <button class="set-tab" data-tab="interface" data-i18n="set_interface">Interface</button>
+          <button class="set-tab" data-tab="emulator" data-i18n="set_emulator">Emulador</button>
+          <button class="set-tab" data-tab="network" data-i18n="set_network">Rede</button>
+          <button class="set-tab" data-tab="debug" data-i18n="set_debug">Depuração</button>
+          <button class="set-tab" data-tab="about" data-i18n="set_about">Sobre</button>
+        </div>
+        <div class="settings-panels">
+          <div class="set-panel active" data-panel="core">
+            <div class="set-block-title" data-i18n="core_module_management">Gerenciamento de módulos</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="core_module_loading">Modo de carregamento de módulos</label>
+            </div>
+            <div class="core-modes" id="core-modes">
+              <button class="core-mode active" data-mode="automatic" data-i18n="core_mode_auto">Automatic</button>
+              <button class="core-mode" data-mode="auto_manual" data-i18n="core_mode_auto_manual">Auto &amp; Manual</button>
+              <button class="core-mode" data-mode="manual" data-i18n="core_mode_manual">Manual</button>
+            </div>
+            <div class="set-block-title" data-i18n="core_modules_list">LEE Modules List</div>
+            <div class="core-meta" id="core-count"></div>
+            <input class="core-search" id="core-search" type="text" data-i18n="core_search_ph" placeholder="Pesquisar módulos..." />
+            <div class="core-modules" id="core-modules"></div>
+          </div>
+          <div class="set-panel" data-panel="cpu">
+            <div class="set-block-title" data-i18n="cpu_dynarmic">Dynarmic Settings</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="cpu_optimizations">Ativar otimizações de CPU</label>
+              <button class="btn btn-sm" id="cpu-opt-toggle">Desativar</button>
+            </div>
+            <div class="set-block-title" data-i18n="set_cpu_threads">Threads</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_cpu_pool">Tamanho do pool de threads da CPU</label>
+              <div class="set-inline">
+                <input type="range" id="set-cpu-pool" min="1" max="64" step="1" value="10" />
+                <span class="set-val" id="set-cpu-pool-val">10</span>
+              </div>
+            </div>
+          </div>
+          <div class="set-panel" data-panel="graphics">
+            <div class="set-block-title" data-i18n="set_gpu_renderer">Renderer</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_renderer">Renderer</label>
+              <select id="set-renderer">
+                <option>Vulkan</option>
+                <option>OpenGL</option>
+              </select>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_custom_driver">Driver personalizado</label>
+              <input type="text" id="set-custom-driver" class="dir-input" spellcheck="false" placeholder="(auto)" />
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_gpu_idx">Índice da GPU</label>
+              <input type="number" id="set-gpu-idx" class="dir-input" min="0" max="15" />
+            </div>
+            <div class="set-row set-unsupported">
+              <label class="set-label" data-i18n="set_gles">Forçar GLES (experimental)</label>
+              <span class="set-unsupported-tag" data-i18n="set_unsupported_tag"></span>
+              <label class="switch"><input type="checkbox" id="set-gles" /><span class="slider"></span></label>
+            </div>
+            <div class="set-block-title" data-i18n="set_emu_display">Exibição</div>
+            <div class="set-row set-unsupported">
+              <label class="set-label" data-i18n="set_res">Resolução</label><span class="set-unsupported-tag" data-i18n="set_unsupported_tag"></span>
+              <select id="set-res">
+                <option value="native" data-i18n="res_native">Nativa (960x544)</option>
+                <option value="720" data-i18n="res_720">720p</option>
+                <option value="1080" data-i18n="res_1080">1080p</option>
+                <option value="window" data-i18n="res_window">Seguir a janela</option>
+              </select>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_vsync">Sincronização vertical (V-Sync)</label>
+              <label class="switch"><input type="checkbox" id="set-vsync" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_fullscreen">Tela cheia</label>
+              <button class="btn btn-sm" id="set-fullscreen" data-i18n="set_toggle_fs">Alternar</button>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_fhd_pixel">Pixel perfeito em tela cheia HD</label>
+              <label class="switch"><input type="checkbox" id="set-fhd-pixel" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_stretch_display">Esticar a área de exibição</label>
+              <label class="switch"><input type="checkbox" id="set-stretch-display" /><span class="slider"></span></label>
+            </div>
+            <div class="set-block-title" data-i18n="set_gpu_performance">Desempenho</div>
+            <div class="set-row set-unsupported">
+              <label class="set-label" data-i18n="set_buffer">Buffer Rendering</label><span class="set-unsupported-tag" data-i18n="set_unsupported_tag"></span>
+              <label class="switch"><input type="checkbox" id="set-buffer" checked /><span class="slider"></span></label>
+            </div>
+            <div class="set-row set-unsupported">
+              <label class="set-label" data-i18n="set_texfilter">Filtragem de textura</label><span class="set-unsupported-tag" data-i18n="set_unsupported_tag"></span>
+              <label class="switch"><input type="checkbox" id="set-texfilter" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row set-unsupported">
+              <label class="set-label" data-i18n="set_gpustats">Mostrar estatísticas de GPU</label><span class="set-unsupported-tag" data-i18n="set_unsupported_tag"></span>
+              <label class="switch"><input type="checkbox" id="set-gpustats" /><span class="slider"></span></label>
+            </div>
+            <div class="graphics-balloon graphics-group" id="set-image-quality">
+              <div class="graphics-balloon-title" data-i18n="set_image_quality">Image Quality</div>
+              <div class="graphics-balloon graphics-sub" id="set-res-upscaling">
+                <div class="graphics-balloon-title" data-i18n="set_internal_res">Internal Resolution Upscaling</div>
+                <div class="balloon-range">
+                  <input type="range" id="set-res-mult" min="1" max="4" step="0.5" value="1" />
+                  <span class="balloon-range-val" id="set-res-mult-val">1x</span>
+                </div>
+                <div class="graphics-balloon-hint" data-i18n="set_internal_res_hint"></div>
+              </div>
+              <div class="graphics-balloon graphics-sub" id="set-aniso-balloon">
+                <div class="graphics-balloon-title" data-i18n="set_aniso">Anisotropic Filtering</div>
+                <div class="graphics-tabs" role="radiogroup" aria-label="Anisotropic Filtering">
+                  <button type="button" class="graphics-tab" data-setting="anisotropicFiltering" data-value="1" role="radio" aria-checked="false">1x</button>
+                  <button type="button" class="graphics-tab" data-setting="anisotropicFiltering" data-value="2" role="radio" aria-checked="false">2x</button>
+                  <button type="button" class="graphics-tab" data-setting="anisotropicFiltering" data-value="4" role="radio" aria-checked="false">4x</button>
+                  <button type="button" class="graphics-tab" data-setting="anisotropicFiltering" data-value="8" role="radio" aria-checked="false">8x</button>
+                  <button type="button" class="graphics-tab" data-setting="anisotropicFiltering" data-value="16" role="radio" aria-checked="false">16x</button>
+                </div>
+              </div>
+              <div class="graphics-balloon graphics-sub" id="set-screen-filter">
+                <div class="graphics-balloon-title" data-i18n="set_screen_filter">Screen Filter</div>
+                <div class="graphics-tabs" role="radiogroup" aria-label="Screen Filter">
+                  <button type="button" class="graphics-tab" data-setting="screenFilter" data-value="Nearest" role="radio" aria-checked="false">Nearest</button>
+                  <button type="button" class="graphics-tab" data-setting="screenFilter" data-value="Bilinear" role="radio" aria-checked="false">Bilinear</button>
+                  <button type="button" class="graphics-tab" data-setting="screenFilter" data-value="Bicubic" role="radio" aria-checked="false">Bicubic</button>
+                  <button type="button" class="graphics-tab" data-setting="screenFilter" data-value="FXAA" role="radio" aria-checked="false">FXAA</button>
+                  <button type="button" class="graphics-tab" data-setting="screenFilter" data-value="FSR" role="radio" aria-checked="false">FSR</button>
+                </div>
+                <div class="graphics-balloon-hint" id="screen-filter-hint" data-i18n="set_screen_filter_hint"></div>
+              </div>
+              <div class="graphics-balloon graphics-sub" id="set-high-acc">
+                <div class="graphics-balloon-title" data-i18n="set_rendering_accuracy">Rendering Accuracy</div>
+                <div class="graphics-tabs" role="radiogroup" aria-label="Rendering Accuracy">
+                  <button type="button" class="graphics-tab" data-setting="highAccuracy" data-value="false" role="radio" aria-checked="false">Standard</button>
+                  <button type="button" class="graphics-tab" data-setting="highAccuracy" data-value="true" role="radio" aria-checked="false">High</button>
+                </div>
+                <div class="graphics-balloon-hint" id="rendering-accuracy-hint" data-i18n="set_rendering_accuracy_hint"></div>
+              </div>
+            </div>
+            <div class="graphics-balloon" id="set-surface-sync">
+              <div class="graphics-balloon-title" data-i18n="set_surface_sync">Disable Surface Sync</div>
+              <button type="button" class="graphics-state-btn" id="set-surface-sync-btn" data-state="on">Enabled</button>
+            </div>
+            <div class="graphics-balloon" id="gfx-async-pipeline">
+              <div class="graphics-balloon-title" data-i18n="set_async_pipeline">Asynchronous Pipeline Compilation</div>
+              <label class="switch"><input type="checkbox" id="set-async-pipeline" /><span class="slider"></span></label>
+            </div>
+            <div class="graphics-balloon" id="set-mem-mapping">
+              <div class="graphics-balloon-title" data-i18n="set_mem_mapping">Memory Mapping</div>
+              <div class="graphics-tabs" role="radiogroup" aria-label="Memory Mapping">
+                <button type="button" class="graphics-tab" data-setting="memoryMapping" data-value="Disabled" role="radio" aria-checked="false" data-i18n="set_mm_disable">Disable</button>
+                <button type="button" class="graphics-tab" data-setting="memoryMapping" data-value="Double buffer" role="radio" aria-checked="false" data-i18n="set_mm_double_buffer">Double Buffer</button>
+                <button type="button" class="graphics-tab" data-setting="memoryMapping" data-value="Page Table" role="radio" aria-checked="false" data-i18n="set_mm_page_table">Page Table</button>
+                <button type="button" class="graphics-tab" data-setting="memoryMapping" data-value="Native Buffer" role="radio" aria-checked="false" data-i18n="set_mm_native_buffer">Native Buffer</button>
+              </div>
+            </div>
+            <div class="graphics-balloon graphics-group" id="set-textures-shaders">
+              <div class="graphics-balloon-title" data-i18n="set_gpu_textures">Textures and Shaders</div>
+              <div class="graphics-balloon graphics-sub" id="gfx-export-tex">
+                <div class="graphics-balloon-title" data-i18n="set_export_tex">Export Textures</div>
+                <label class="switch"><input type="checkbox" id="set-export-tex" /><span class="slider"></span></label>
+              </div>
+              <div class="set-row">
+                <label class="set-label" data-i18n="set_tex_format">Formato de exportação</label>
+                <select id="set-tex-format">
+                  <option value="png">PNG</option><option value="dds">DDS</option>
+                </select>
+              </div>
+              <div class="graphics-balloon graphics-sub" id="gfx-import-tex">
+                <div class="graphics-balloon-title" data-i18n="set_import_tex">Import Textures</div>
+                <label class="switch"><input type="checkbox" id="set-import-tex" /><span class="slider"></span></label>
+              </div>
+              <div class="set-row">
+                <label class="set-label" data-i18n="set_texture_cache">Cache de texturas</label>
+                <label class="switch"><input type="checkbox" id="set-texture-cache" /><span class="slider"></span></label>
+              </div>
+              <div class="set-row">
+                <label class="set-label" data-i18n="set_hashless_tc">Cache de texturas sem hash</label>
+                <label class="switch"><input type="checkbox" id="set-hashless-tc" /><span class="slider"></span></label>
+              </div>
+              <div class="set-block-title set-subblock" data-i18n="set_shaders">Shaders</div>
+              <div class="graphics-balloon graphics-sub" id="gfx-shader-cache">
+                <div class="graphics-balloon-title" data-i18n="set_shader_cache">Enable Shader Cache</div>
+                <label class="switch"><input type="checkbox" id="set-shader-cache" checked /><span class="slider"></span></label>
+              </div>
+              <div class="graphics-balloon graphics-sub" id="gfx-spirv">
+                <div class="graphics-balloon-title" data-i18n="set_spirv">Use SPIR-V Shader (deprecated)</div>
+                <label class="switch"><input type="checkbox" id="set-spirv" /><span class="slider"></span></label>
+              </div>
+              <div class="set-row">
+                <label class="set-label" data-i18n="set_clean_shaders">Limpar cache de shaders e registro</label>
+                <button class="btn btn-sm" id="set-clean-shaders" data-i18n="set_clean_btn">Limpar</button>
+              </div>
+            </div>
+            <div class="set-block-title" data-i18n="set_hacks">Hacks</div>
+            <div class="graphics-balloon" id="gfx-fps-hack">
+              <div class="graphics-balloon-title" data-i18n="set_fps_hack">FPS Hack</div>
+              <label class="switch"><input type="checkbox" id="set-fps-hack" /><span class="slider"></span></label>
+            </div>
+          </div>
+          <div class="set-panel" data-panel="audio">
+            <div class="set-block-title" data-i18n="set_audio_settings">Configurações de áudio</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_audio_backend">Backend de áudio</label>
+              <select id="set-audio-backend">
+                <option>SDL</option><option>Cubeb</option>
+              </select>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_volume">Volume</label>
+              <div class="set-inline">
+                <input type="range" id="set-audio-volume" min="0" max="100" value="100" />
+                <span class="set-val" id="set-audio-vol-val">100%</span>
+              </div>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_ngs">Módulos de som NGS</label>
+              <label class="switch"><input type="checkbox" id="set-ngs" /><span class="slider"></span></label>
+            </div>
+            <div class="set-block-title" data-i18n="set_audio_theme">Música do tema</div>
+            <div class="set-row set-unsupported">
+              <label class="set-label" data-i18n="set_theme_music">Usar música de fundo do tema</label><span class="set-unsupported-tag" data-i18n="set_unsupported_tag"></span>
+              <label class="switch"><input type="checkbox" id="set-theme-music" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row set-unsupported">
+              <label class="set-label" data-i18n="set_theme_vol">Volume da música do tema</label><span class="set-unsupported-tag" data-i18n="set_unsupported_tag"></span>
+              <div class="set-inline">
+                <input type="range" id="set-theme-volume" min="0" max="100" value="100" />
+                <span class="set-val" id="set-theme-vol-val">100%</span>
+              </div>
+            </div>
+          </div>
+          <div class="set-panel" data-panel="camera">
+            <div class="set-block-title" data-i18n="set_cam_front">Câmera frontal</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_cam_type">Tipo de câmera</label>
+              <select id="set-front-cam-type">
+                <option value="0">Solid Color</option>
+                <option value="1">Static Image</option>
+                <option value="2">Built-In</option>
+              </select>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_cam_color">Cor da câmera</label>
+              <input type="color" id="set-front-cam-color" value="#000000" />
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_cam_image">Imagem da câmera</label>
+              <div class="set-inline">
+                <span class="set-val" id="set-front-cam-path">—</span>
+                <button class="btn btn-sm" id="set-front-cam-browse" data-i18n="set_browse">Navegar...</button>
+              </div>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_cam_id">ID do dispositivo de câmera</label>
+              <input type="text" id="set-front-cam-id" class="dir-input" spellcheck="false" placeholder="(auto)" />
+            </div>
+            <div class="set-block-title" data-i18n="set_cam_back">Câmera traseira</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_cam_type">Tipo de câmera</label>
+              <select id="set-back-cam-type">
+                <option value="0">Solid Color</option>
+                <option value="1">Static Image</option>
+                <option value="2">Built-In</option>
+              </select>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_cam_color">Cor da câmera</label>
+              <input type="color" id="set-back-cam-color" value="#000000" />
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_cam_image">Imagem da câmera</label>
+              <div class="set-inline">
+                <span class="set-val" id="set-back-cam-path">—</span>
+                <button class="btn btn-sm" id="set-back-cam-browse" data-i18n="set_browse">Navegar...</button>
+              </div>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_cam_id">ID do dispositivo de câmera</label>
+              <input type="text" id="set-back-cam-id" class="dir-input" spellcheck="false" placeholder="(auto)" />
+            </div>
+          </div>
+          <div class="set-panel" data-panel="system">
+            <div class="set-block-title" data-i18n="set_sys_storage">Armazenamento</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_install_dir">Diretório de instalação</label>
+              <span class="set-val" id="set-install-dir"></span>
+              <button class="btn btn-sm" id="set-install-browse" data-i18n="set_browse">Navegar...</button>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_fw">Firmware instalado</label>
+              <span class="set-val" id="set-fw"></span>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_overwrite">Sobrescrever arquivos ao instalar</label>
+              <label class="switch"><input type="checkbox" id="set-overwrite" /><span class="slider"></span></label>
+            </div>
+            <div class="set-block-title" data-i18n="set_sys_settings">Configurações do sistema</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_enter_btn">Atribuição do botão Enter</label>
+              <select id="set-enter-btn">
+                <option value="1">Cross</option><option value="0">Circle</option>
+              </select>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_pstv">Modo PlayStation TV (PSTV)</label>
+              <label class="switch"><input type="checkbox" id="set-pstv" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_show_mode">Show Mode</label>
+              <label class="switch"><input type="checkbox" id="set-show-mode" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_demo_mode">Demo Mode</label>
+              <label class="switch"><input type="checkbox" id="set-demo-mode" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_lang">Idioma</label>
+              <select id="set-lang"></select>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_user_lang">Idioma do usuário</label>
+              <input type="text" id="set-user-lang" class="dir-input" spellcheck="false" placeholder="(auto)" />
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_sys_lang">Idioma do sistema</label>
+              <select id="set-sys-lang">
+                <option value="0">Japanese</option><option value="1">English (US)</option>
+                <option value="2">French</option><option value="3">Spanish</option>
+                <option value="4">German</option><option value="5">Italian</option>
+                <option value="6">Dutch</option><option value="7">Portuguese (PT)</option>
+                <option value="8">Russian</option><option value="9">Korean</option>
+                <option value="10">Chinese (Traditional)</option><option value="11">Chinese (Simplified)</option>
+                <option value="12">Finnish</option><option value="13">Swedish</option>
+                <option value="14">Danish</option><option value="15">Norwegian</option>
+                <option value="16">Polish</option><option value="17">Portuguese (BR)</option>
+                <option value="18">English (GB)</option><option value="19">Turkish</option>
+              </select>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_ime_lang">Idioma do teclado (IME)</label>
+              <select id="set-ime-lang">
+                <option value="0">Japanese</option><option value="1">English (US)</option>
+                <option value="2">French</option><option value="3">Spanish</option>
+                <option value="4">German</option><option value="5">Italian</option>
+                <option value="6">Dutch</option><option value="7">Portuguese (PT)</option>
+                <option value="8">Russian</option><option value="9">Korean</option>
+                <option value="10">Chinese (Traditional)</option><option value="11">Chinese (Simplified)</option>
+                <option value="12">Finnish</option><option value="13">Swedish</option>
+                <option value="14">Danish</option><option value="15">Norwegian</option>
+                <option value="16">Polish</option><option value="17">Portuguese (BR)</option>
+                <option value="18">English (GB)</option><option value="19">Turkish</option>
+              </select>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_ime_langs">Idiomas de teclado ativos</label>
+              <input type="text" id="set-ime-langs" class="dir-input" spellcheck="false" placeholder="4, 1" />
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_date_fmt">Formato de data</label>
+              <select id="set-date-format">
+                <option value="0">YYYY/MM/DD</option><option value="1">DD/MM/YYYY</option><option value="2">MM/DD/YYYY</option>
+              </select>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_time_fmt">Formato de hora</label>
+              <select id="set-time-format">
+                <option value="0">12-Hour</option><option value="1">24-Hour</option>
+              </select>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_user">Usuário</label>
+              <span class="set-val" id="set-user"></span>
+            </div>
+          </div>
+          <div class="set-panel" data-panel="controls">
+            <div class="set-block-title" data-i18n="set_ctl_general">Geral</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_analog_mult">Multiplicador do analógico</label>
+              <div class="set-inline">
+                <input type="range" id="set-analog-mult" min="50" max="200" step="10" value="100" />
+                <span class="set-val" id="set-analog-mult-val">1.0x</span>
+              </div>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_disable_motion">Desativar controles de movimento</label>
+              <label class="switch"><input type="checkbox" id="set-disable-motion" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_led_color">Cor do LED do controle</label>
+              <input type="text" id="set-controller-led" class="dir-input" placeholder="255,0,0" spellcheck="false" />
+            </div>
+            <div class="set-block-title" data-i18n="set_pad_binds">Controle externo</div>
+            <div class="set-row">
+              <span class="set-label" style="font-size:13px;color:rgba(255,255,255,0.55)" data-i18n="set_pad_binds_hint">Índice do botão/eixo de cada controle do Vita dentro do controle Bluetooth (gamepad).</span>
+            </div>
+            <div class="set-block-title set-subblock" data-i18n="set_pad_buttons">Botões</div>
+            <div id="pad-bind-list"></div>
+            <div class="set-block-title set-subblock" data-i18n="set_pad_axes">Eixos analógicos</div>
+            <div id="pad-axis-list"></div>
+            <div class="set-block-title" data-i18n="set_kbd_binds">Mapeamento do teclado</div>
+            <div class="set-row">
+              <span class="set-label" style="font-size:13px;color:rgba(255,255,255,0.55)" data-i18n="set_kbd_hint">Toque para escolher a tecla de cada ação.</span>
+            </div>
+            <div id="kbd-bind-list"></div>
+          </div>
+          <div class="set-panel" data-panel="interface">
+            <div class="set-block-title" data-i18n="set_gui_look">Aparência</div>
+            <div class="set-row set-unsupported">
+              <label class="set-label" data-i18n="set_stylesheet">Folha de estilo</label><span class="set-unsupported-tag" data-i18n="set_unsupported_tag"></span>
+              <select id="set-stylesheet">
+                <option value="classic">Classic</option><option value="waves">Waves</option>
+              </select>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_bg_alpha">Opacidade do fundo</label>
+              <div class="set-inline">
+                <input type="range" id="set-bg-alpha" min="0" max="100" step="5" value="30" />
+                <span class="set-val" id="set-bg-alpha-val">30%</span>
+              </div>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_apps_grid">Lista de aplicativos em grade</label>
+              <label class="switch"><input type="checkbox" id="set-apps-grid" /><span class="slider"></span></label>
+            </div>
+            <div class="set-block-title" data-i18n="set_gui_logging">Registro</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_log_buffer">Tamanho do buffer de registro</label>
+              <input type="number" id="set-log-buffer" class="dir-input" min="0" />
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_log_font">Fonte do registro</label>
+              <input type="text" id="set-log-font" class="dir-input" spellcheck="false" />
+            </div>
+            <div class="set-block-title" data-i18n="set_gui_behavior">Comportamento</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_show_welcome">Mostrar tela de boas-vindas</label>
+              <label class="switch"><input type="checkbox" id="set-show-welcome" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_warn_fw">Avisar quando o firmware estiver ausente</label>
+              <label class="switch"><input type="checkbox" id="set-warn-fw" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row set-unsupported">
+              <label class="set-label" data-i18n="set_confirm_exit">Confirmar ao sair</label><span class="set-unsupported-tag" data-i18n="set_unsupported_tag"></span>
+              <label class="switch"><input type="checkbox" id="set-confirm-exit" /><span class="slider"></span></label>
+            </div>
+          </div>
+          <div class="set-panel" data-panel="emulator">
+            <div class="set-block-title" data-i18n="set_emu_behavior">Comportamento</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_boot_fullscreen">Iniciar aplicativos em tela cheia</label>
+              <label class="switch"><input type="checkbox" id="set-boot-fullscreen" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_livearea">Mostrar Live Area antes de iniciar</label>
+              <label class="switch"><input type="checkbox" id="set-show-livearea" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_shader_hint">Mostrar dica de compilação de shaders</label>
+              <label class="switch"><input type="checkbox" id="set-show-shaderhint" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_turbo_mode">Modo turbo</label>
+              <label class="switch"><input type="checkbox" id="set-turbo-mode" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_update_mode">Verificar atualizações ao iniciar</label>
+              <select id="set-update-mode">
+                <option value="prompt">Check</option><option value="off">Don't Check</option>
+              </select>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_discord">Discord Rich Presence</label>
+              <label class="switch"><input type="checkbox" id="set-discord" /><span class="slider"></span></label>
+            </div>
+            <div class="set-block-title" data-i18n="set_emu_overlay">Sobreposição de desempenho</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_perf_overlay">Habilitar sobreposição</label>
+              <label class="switch"><input type="checkbox" id="set-perf-overlay" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_perf_detail">Detalhe da sobreposição</label>
+              <select id="set-perf-detail">
+                <option value="0">Minimum</option><option value="1">Low</option><option value="2">Medium</option><option value="3">Maximum</option>
+              </select>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_perf_pos">Posição da sobreposição</label>
+              <select id="set-perf-position">
+                <option value="0">Top Left</option><option value="1">Top Center</option><option value="2">Top Right</option>
+                <option value="3">Bottom Left</option><option value="4">Bottom Center</option><option value="5">Bottom Right</option>
+              </select>
+            </div>
+            <div class="set-block-title" data-i18n="set_emu_capture">Captura</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_screenshot_fmt">Formato de captura de tela</label>
+              <select id="set-screenshot-format">
+                <option value="0">None</option><option value="1">JPEG</option><option value="2">PNG</option>
+              </select>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_file_delay">Atraso de carregamento de arquivo</label>
+              <div class="set-inline">
+                <input type="range" id="set-file-delay" min="0" max="30" value="0" />
+                <span class="set-val" id="set-file-delay-val">0 ms</span>
+              </div>
+            </div>
+            <div class="set-block-title" data-i18n="set_emu_delays">Atrasos</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_delay_start">Atraso para iniciar aplicativos</label>
+              <div class="set-inline">
+                <input type="range" id="set-delay-start" min="0" max="60" step="1" value="0" />
+                <span class="set-val" id="set-delay-start-val">0 s</span>
+              </div>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_delay_background">Atraso de aplicativos em segundo plano</label>
+              <div class="set-inline">
+                <input type="range" id="set-delay-background" min="0" max="60" step="1" value="0" />
+                <span class="set-val" id="set-delay-background-val">0 s</span>
+              </div>
+            </div>
+            <div class="set-block-title" data-i18n="set_emu_storage">Armazenamento</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_emu_path">Pasta do sistema do emulador</label>
+              <div class="set-inline">
+                <span class="set-val" id="set-emu-path"></span>
+                <button class="btn btn-sm" id="set-emu-browse" data-i18n="set_browse">Navegar...</button>
+                <button class="btn btn-sm" id="set-emu-reset" data-i18n="set_emu_reset">Redefinir</button>
+              </div>
+            </div>
+          </div>
+          <div class="set-panel" data-panel="network">
+            <div class="set-block-title" data-i18n="set_net_psn">PlayStation Network</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_http_enable">Habilitar rede HTTP</label>
+              <label class="switch"><input type="checkbox" id="set-http-enable" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row set-unsupported">
+              <label class="set-label" data-i18n="set_np_signed">PSN conectado</label><span class="set-unsupported-tag" data-i18n="set_unsupported_tag"></span>
+              <label class="switch"><input type="checkbox" id="set-np-signed" disabled /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_auto_connect">Login automático do usuário</label>
+              <label class="switch"><input type="checkbox" id="set-auto-connect" /><span class="slider"></span></label>
+            </div>
+            <div class="set-block-title" data-i18n="set_net_timeout">Tempo limite HTTP</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_http_attempts">Tentativas de tempo limite</label>
+              <input type="number" id="set-http-attempts" class="dir-input" min="0" />
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_http_sleep">Atraso do tempo limite (ms)</label>
+              <input type="number" id="set-http-sleep" class="dir-input" min="0" />
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_http_read_attempts">Tentativas de leitura</label>
+              <input type="number" id="set-http-read-attempts" class="dir-input" min="0" />
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_http_read_sleep">Espera de leitura (ms)</label>
+              <input type="number" id="set-http-read-sleep" class="dir-input" min="0" />
+            </div>
+            <div class="set-block-title" data-i18n="set_net_adhoc">Ad-Hoc</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_adhoc_addr">Endereço Ad-Hoc</label>
+              <input type="text" id="set-adhoc-addr" class="dir-input" spellcheck="false" />
+            </div>
+            <div class="set-block-title" data-i18n="set_net_region">Região</div>
+            <div class="set-row set-unsupported">
+              <label class="set-label" data-i18n="set_region">Região de atualização</label><span class="set-unsupported-tag" data-i18n="set_unsupported_tag"></span>
+              <select id="set-region">
+                <option value="us">US</option><option value="eu">EU</option><option value="jp">JP</option>
+                <option value="uk">UK</option><option value="pt">PT</option><option value="br">BR</option>
+              </select>
+            </div>
+            <div class="set-row set-unsupported">
+              <label class="set-label" data-i18n="set_delay">Atrasar ativação de rede</label><span class="set-unsupported-tag" data-i18n="set_unsupported_tag"></span>
+              <label class="switch"><input type="checkbox" id="set-delay" /><span class="slider"></span></label>
+            </div>
+          </div>
+          <div class="set-panel" data-panel="debug">
+            <div class="set-block-title" data-i18n="set_dbg_logging">Registro</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_log_level">Nível de registro</label>
+              <select id="set-log-level">
+                <option value="0">Trace</option><option value="1">Debug</option><option value="2">Info</option>
+                <option value="3">Warning</option><option value="4">Error</option><option value="5">Critical</option>
+                <option value="6">Off</option>
+              </select>
+            </div>
+            <div class="set-row set-unsupported">
+              <label class="set-label" data-i18n="set_log_exports">Registrar exportações</label><span class="set-unsupported-tag" data-i18n="set_unsupported_tag"></span>
+              <label class="switch"><input type="checkbox" id="set-log-exports" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row set-unsupported">
+              <label class="set-label" data-i18n="set_log_imports">Registrar importações</label><span class="set-unsupported-tag" data-i18n="set_unsupported_tag"></span>
+              <label class="switch"><input type="checkbox" id="set-log-imports" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_log_active_shaders">Registrar shaders ativos</label>
+              <label class="switch"><input type="checkbox" id="set-log-active-shaders" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_log_uniforms">Registrar uniformes de shader</label>
+              <label class="switch"><input type="checkbox" id="set-log-uniforms" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_log_compat">Registrar avisos de compatibilidade</label>
+              <label class="switch"><input type="checkbox" id="set-log-compat-warn" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_archive_log">Arquivar registro em arquivo</label>
+              <label class="switch"><input type="checkbox" id="set-archive-log" /><span class="slider"></span></label>
+            </div>
+            <div class="set-block-title" data-i18n="set_dbg_debugger">Depurador</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_gdbstub">GDB stub (depuração remota)</label>
+              <label class="switch"><input type="checkbox" id="set-gdbstub" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_wait_debugger">Esperar pelo depurador</label>
+              <label class="switch"><input type="checkbox" id="set-wait-debugger" /><span class="slider"></span></label>
+            </div>
+            <div class="set-block-title" data-i18n="set_dbg_gpu">Gráficos</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_val_layer">Camada de validação Vulkan</label>
+              <label class="switch"><input type="checkbox" id="set-val-layer" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_color_surface">Salvar superfícies coloridas</label>
+              <label class="switch"><input type="checkbox" id="set-color-surface" /><span class="slider"></span></label>
+            </div>
+            <div class="set-block-title" data-i18n="set_dbg_profiler">Profiler</div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_tracy_prims">Instrumentar primitivas com Tracy</label>
+              <label class="switch"><input type="checkbox" id="set-tracy-primitives" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row">
+              <label class="set-label" data-i18n="set_tracy_modules">Módulos de perfil avançado (Tracy)</label>
+              <input type="text" id="set-tracy-modules" class="dir-input" spellcheck="false" placeholder="(nenhum)" />
+            </div>
+            <div class="set-block-title" data-i18n="set_dbg_misc">Diversos</div>
+            <div class="set-row set-unsupported">
+              <label class="set-label" data-i18n="set_dump_elfs">Dump de ELFs</label><span class="set-unsupported-tag" data-i18n="set_unsupported_tag"></span>
+              <label class="switch"><input type="checkbox" id="set-dump-elfs" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row set-unsupported">
+              <label class="set-label" data-i18n="set_watch_mem">Vigiar memória</label><span class="set-unsupported-tag" data-i18n="set_unsupported_tag"></span>
+              <label class="switch"><input type="checkbox" id="set-watch-mem" /><span class="slider"></span></label>
+            </div>
+            <div class="set-row set-unsupported">
+              <label class="set-label" data-i18n="set_watch_imports">Vigiar chamadas de importação</label><span class="set-unsupported-tag" data-i18n="set_unsupported_tag"></span>
+              <label class="switch"><input type="checkbox" id="set-watch-imports" /><span class="slider"></span></label>
+            </div>
+          </div>
+          <div class="set-panel" data-panel="about">
+            <div class="set-row">
+              <div class="about-box">
+                <div class="rpcsv-logo small"><span class="logo-text">RPCSV</span></div>
+                <p><strong data-i18n="set_about">RPCSV</strong> &mdash; <span data-i18n="about_desc">emulador de PS Vita com o layout original do console, usando o motor do Vita3K.</span></p>
+                <p id="set-about-ver"></p>
+                <p><code>com.rpcsv.app</code> &middot; <span data-i18n="about_license">GPL-2.0</span></p>
+                <p class="about-update">
+                  <span id="set-about-update"></span>
+                  <button class="btn" id="set-about-update-btn" data-i18n="upd_check_now">Verificar agora</button>
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ LIBRARY / GAMES ============ -->
+    <section id="screen-library" class="screen library inactive">
+      <header class="sub-header">
+        <button class="btn-back" id="library-back">&#9664;</button>
+        <h1 data-i18n="library_title">Biblioteca de Jogos</h1>
+        <span class="sub-spacer"></span>
+      </header>
+      <div class="gd-tabs lib-tabs" id="lib-tabs">
+        <button class="gd-tab active" data-ltab="games" data-i18n="lib_tab_games">Jogos</button>
+        <button class="gd-tab" data-ltab="system" data-i18n="lib_tab_system">Sistema</button>
+      </div>
+      <div class="library-body" id="library-body"></div>
+      <div class="lib-panel hidden" id="lib-system">
+        <div class="lib-sys-status">
+          <div class="lib-sys-row">
+            <span data-i18n="lib_fw_state">Firmware</span>
+            <span id="lib-fw-ver">—</span>
+          </div>
+          <div class="lib-sys-row">
+            <span data-i18n="lib_pre_state">Pré-atualização</span>
+            <span id="lib-pre-ver">—</span>
+          </div>
+          <div class="lib-sys-row">
+            <span data-i18n="lib_font_state">Pacote de fontes</span>
+            <span id="lib-font-ver">—</span>
+          </div>
+        </div>
+        <div class="lib-sys-acts">
+          <button class="btn btn-primary" id="lib-fw-btn" data-i18n="lib_fw_install">Instalar firmware</button>
+          <button class="btn" id="lib-pre-btn" data-i18n="lib_pre_install">Instalar pre-update</button>
+          <button class="btn" id="lib-font-btn" data-i18n="lib_font_install">Instalar fonte</button>
+          <button class="btn btn-ghost" id="lib-fw-site" data-i18n="fw_site">Baixar no site oficial</button>
+        </div>
+        <div class="lib-sys-bars">
+          <div class="fw-bar-wrap hidden" id="lib-fw-bar">
+            <div class="fw-bar"><span id="lib-fw-fill"></span></div>
+            <div class="fw-meta" id="lib-fw-meta"></div>
+          </div>
+          <div class="fw-bar-wrap hidden" id="lib-pre-bar">
+            <div class="fw-bar"><span id="lib-pre-fill"></span></div>
+            <div class="fw-meta" id="lib-pre-meta"></div>
+          </div>
+          <div class="fw-bar-wrap hidden" id="lib-font-bar">
+            <div class="fw-bar"><span id="lib-font-fill"></span></div>
+            <div class="fw-meta" id="lib-font-meta"></div>
+          </div>
+        </div>
+        <p class="lib-sys-err" id="lib-sys-err"></p>
+        <p class="sub-note" data-i18n="lib_sys_note">Estes pacotes são do sistema. Instale o firmware antes do pre-update e das fontes.</p>
+      </div>
+    </section>
+
+    <!-- ============ INSTALLER / PROGRESS ============ -->
+    <section id="screen-installer" class="screen installer inactive">
+      <header class="sub-header">
+        <button class="btn-back" id="installer-back">&#9664;</button>
+        <h1 data-i18n="installer_title">Instalação</h1>
+        <span class="sub-spacer"></span>
+      </header>
+      <div class="installer-body" id="installer-body"></div>
+    </section>
+
+    <!-- ============ BROWSER ============ -->
+    <section id="screen-browser" class="screen sub inactive">
+      <header class="sub-header">
+        <button class="btn-back" id="browser-back">&#9664;</button>
+        <h1 data-i18n="app_browser">Navegador</h1>
+        <span class="sub-spacer"></span>
+      </header>
+      <div class="sub-body">
+        <div class="url-row">
+          <input id="browser-url" class="url-input" value="https://" spellcheck="false" autocomplete="off" />
+          <button class="btn btn-primary" id="browser-open" data-i18n="browser_open">Abrir</button>
+        </div>
+        <p class="sub-note" data-i18n="browser_note">Abre no navegador ou aplicativo externo vinculado ao console.</p>
+        <div class="links-grid" id="browser-links"></div>
+      </div>
+    </section>
+
+    <!-- ============ MUSIC ============ -->
+    <section id="screen-music" class="screen sub inactive">
+      <header class="sub-header">
+        <button class="btn-back" id="music-back">&#9664;</button>
+        <h1 data-i18n="app_music">Música</h1>
+        <span class="sub-spacer"></span>
+      </header>
+      <div class="sub-body music-body">
+        <div class="tool-row">
+          <button class="btn btn-sm" id="music-add" data-i18n="media_add">Adicionar arquivos</button>
+          <span class="tool-info" id="music-info"></span>
+        </div>
+        <div class="track-list" id="music-list"></div>
+      </div>
+      <div class="now-playing" id="now-playing">
+        <div class="np-info"><span id="np-title"></span><span id="np-time"></span></div>
+        <div class="np-controls">
+          <button class="np-btn" id="np-prev" title="Anterior">&#9198;</button>
+          <button class="np-btn np-main" id="np-play">&#9654;</button>
+          <button class="np-btn" id="np-next" title="Próxima">&#9197;</button>
+          <input type="range" id="np-seek" class="np-seek" min="0" max="100" value="0" />
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PHOTOS ============ -->
+    <section id="screen-photos" class="screen sub inactive">
+      <header class="sub-header">
+        <button class="btn-back" id="photos-back">&#9664;</button>
+        <h1 data-i18n="app_photos">Fotos</h1>
+        <span class="sub-spacer"></span>
+      </header>
+      <div class="sub-body">
+        <div class="tool-row">
+          <button class="btn btn-sm" id="photo-add" data-i18n="media_add">Adicionar arquivos</button>
+          <span class="tool-info" id="photo-info"></span>
+        </div>
+        <div class="grid" id="photo-grid"></div>
+      </div>
+    </section>
+
+    <!-- ============ VIDEOS ============ -->
+    <section id="screen-videos" class="screen sub inactive">
+      <header class="sub-header">
+        <button class="btn-back" id="videos-back">&#9664;</button>
+        <h1 data-i18n="app_videos">Vídeos</h1>
+        <span class="sub-spacer"></span>
+      </header>
+      <div class="sub-body">
+        <div class="tool-row">
+          <button class="btn btn-sm" id="video-add" data-i18n="media_add">Adicionar arquivos</button>
+          <span class="tool-info" id="video-info"></span>
+        </div>
+        <div class="grid" id="video-grid"></div>
+      </div>
+    </section>
+
+    <!-- ============ TROPHIES ============ -->
+    <section id="screen-trophies" class="screen sub inactive">
+      <header class="sub-header">
+        <button class="btn-back" id="trophies-back">&#9664;</button>
+        <h1 data-i18n="app_trophies">Troféus</h1>
+        <span class="sub-spacer"></span>
+      </header>
+      <div class="sub-body">
+        <div class="tool-row"><span class="tool-info strong" id="trophy-summary"></span></div>
+        <div class="trophy-list" id="trophy-list"></div>
+      </div>
+    </section>
+
+    <!-- ============ FRIENDS ============ -->
+    <section id="screen-friends" class="screen sub inactive">
+      <header class="sub-header">
+        <button class="btn-back" id="friends-back">&#9664;</button>
+        <h1 data-i18n="app_friends">Amigos</h1>
+        <span class="sub-spacer"></span>
+      </header>
+      <div class="sub-body">
+        <div class="tool-row">
+          <button class="btn btn-sm" id="friends-add" data-i18n="friends_add">Adicionar amigo</button>
+        </div>
+        <div class="friend-list" id="friend-list"></div>
+      </div>
+    </section>
+
+    <!-- ============ PARTY ============ -->
+    <section id="screen-party" class="screen sub inactive">
+      <header class="sub-header">
+        <button class="btn-back" id="party-back">&#9664;</button>
+        <h1 id="party-name" data-i18n="app_party">Festa</h1>
+        <span class="sub-spacer"></span>
+      </header>
+      <div class="sub-body">
+        <div id="party-wrap"></div>
+        <div class="friend-list" id="party-members" style="max-width: 640px;"></div>
+        <div class="tool-row" id="party-tools"></div>
+      </div>
+    </section>
+
+    <!-- ============ MESSAGES ============ -->
+    <section id="screen-messages" class="screen sub inactive">
+      <header class="sub-header">
+        <button class="btn-back" id="messages-back">&#9664;</button>
+        <h1 data-i18n="app_messages">Mensagens</h1>
+        <span class="sub-spacer"></span>
+      </header>
+      <div class="sub-body msg-body">
+        <div class="msg-layout">
+          <div class="msg-contacts" id="msg-contacts"></div>
+          <div class="msg-thread" id="msg-thread"></div>
+        </div>
+        <div class="msg-send hidden" id="msg-send-wrap">
+          <input id="msg-input" class="url-input" placeholder="Mensagem..." spellcheck="false" autocomplete="off" />
+          <button class="btn btn-sm btn-primary" id="msg-send">Enviar</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ CAMERA ============ -->
+    <section id="screen-camera" class="screen sub inactive">
+      <header class="sub-header">
+        <button class="btn-back" id="camera-back">&#9664;</button>
+        <h1 data-i18n="app_camera">Câmera</h1>
+        <span class="sub-spacer"></span>
+      </header>
+      <div class="sub-body cam-body">
+        <p class="sub-note" id="cam-info"></p>
+        <div class="cam-view">
+          <div class="cam-grid"></div>
+          <div class="cam-thumb" id="cam-last"></div>
+          <button class="cam-shoot" id="cam-shoot" title="Capturar">&#9679;</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ MAPS ============ -->
+    <section id="screen-maps" class="screen sub inactive">
+      <header class="sub-header">
+        <button class="btn-back" id="maps-back">&#9664;</button>
+        <h1 data-i18n="app_maps">Mapas</h1>
+        <span class="sub-spacer"></span>
+      </header>
+      <div class="sub-body">
+        <div class="map-grid" id="map-grid"></div>
+        <div class="tool-row"><span class="tool-info strong" data-i18n="maps_near">Lugares próximos</span></div>
+        <div class="map-places" id="map-places"></div>
+      </div>
+    </section>
+
+    <!-- ============ STORE ============ -->
+    <section id="screen-store" class="screen sub inactive">
+      <header class="sub-header">
+        <button class="btn-back" id="store-back">&#9664;</button>
+        <h1 data-i18n="app_store">Loja</h1>
+        <span class="sub-spacer"></span>
+      </header>
+      <div class="sub-body">
+        <p class="sub-note" data-i18n="store_note">Conteúdo homebrew curado. O download abre o catálogo PKGj no navegador.</p>
+        <div class="store-list" id="store-list"></div>
+      </div>
+    </section>
+
+    <!-- ============ CALENDAR ============ -->
+    <section id="screen-calendar" class="screen sub inactive">
+      <header class="sub-header">
+        <button class="btn-back" id="calendar-back">&#9664;</button>
+        <h1 data-i18n="app_calendar">Calendário</h1>
+        <span class="sub-spacer"></span>
+      </header>
+      <div class="sub-body">
+        <div class="cal-head">
+          <button class="btn btn-sm" id="cal-prev">&#9664;</button>
+          <span class="cal-label" id="cal-label"></span>
+          <button class="btn btn-sm" id="cal-next">&#9654;</button>
+        </div>
+        <div class="cal-grid" id="cal-grid"></div>
+        <p class="cal-today" id="cal-today"></p>
+      </div>
+    </section>
+
+    <!-- ============ GAME (embedded player screen) ============ -->
+    <section id="screen-game" class="screen game inactive" data-state="boot">
+      <div class="game-topbar">
+        <span class="game-top-title" id="game-top-title"></span>
+        <span class="top-time" id="game-top-time">--:--</span>
+      </div>
+      <div class="game-stage">
+        <div class="game-art" id="game-art"></div>
+        <div class="game-info">
+          <div class="game-title" id="game-title"></div>
+          <div class="game-tid" id="game-tid"></div>
+        </div>
+        <div class="game-boot" id="game-boot">
+          <div class="game-boot-label" id="game-boot-label">Carregando jogo...</div>
+          <div class="game-boot-track"><div class="game-boot-bar" id="game-bootbar"></div></div>
+        </div>
+        <div class="game-live" id="game-live">
+          <div class="game-live-label" id="game-live-label">Agora jogando</div>
+          <div class="game-live-ring"></div>
+        </div>
+        <div class="game-note" id="game-note"></div>
+      </div>
+      <div class="game-controls">
+        <span class="top-time" id="game-clk">--:--</span>
+        <button class="game-ps-btn" id="game-ps" title="Menu PS">
+          <svg viewBox="0 0 24 24" width="26" height="26"><circle cx="12" cy="12" r="10" fill="currentColor"/><text x="12" y="16" text-anchor="middle" font-size="11" font-family="Arial" fill="#0b0f14">PS</text></svg>
+        </button>
+        <button class="game-exit" id="game-exit" data-i18n="game_stop">Encerrar</button>
+      </div>
+    </section>
+
+    <!-- ============ DETALHE DO APP / JOGO ============ -->
+    <section id="screen-gamedetail" class="screen sub gamedetail inactive">
+      <header class="sub-header">
+        <button class="btn-back" id="gd-back">&#9664;</button>
+        <h1 id="gd-title" data-i18n="gd_title">Jogo</h1>
+        <span class="sub-spacer"></span>
+      </header>
+      <div class="gd-hero">
+        <div class="gd-hero-icon" id="gd-icon"></div>
+        <div class="gd-hero-text">
+          <div class="gd-hero-name" id="gd-name"></div>
+          <div class="gd-hero-tid" id="gd-tid"></div>
+        </div>
+      </div>
+      <div class="gd-tabs" id="gd-tabs">
+        <button class="gd-tab active" data-tab="play" data-i18n="gd_tab_play">Iniciar</button>
+        <button class="gd-tab" data-tab="config" data-i18n="gd_tab_config">Config</button>
+        <button class="gd-tab" data-tab="delete" data-i18n="gd_tab_delete">Deletar</button>
+        <button class="gd-tab" data-tab="info" data-i18n="gd_tab_info">Info</button>
+      </div>
+      <div class="sub-body gd-body">
+        <div class="gd-panel" data-panel="play">
+          <div class="gd-launch-wrap">
+            <div class="gd-launch-art" id="gd-launch-art"></div>
+            <div class="gd-launch-name" id="gd-launch-name"></div>
+          </div>
+          <button class="btn btn-primary gd-play" id="gd-play" data-i18n="gd_play">Iniciar jogo</button>
+          <p class="sub-note" id="gd-play-note" data-i18n="gd_play_note">O emulador vai abrir em tela cheia.</p>
+        </div>
+
+        <div class="gd-panel hidden" data-panel="config">
+          <div class="gd-cfg-row">
+            <label for="gd-cfg-hd" data-i18n="gd_cfg_hd">Modo HD (2x)</label>
+            <input type="checkbox" id="gd-cfg-hd" class="gd-switch" />
+          </div>
+          <div class="gd-cfg-row">
+            <label for="gd-cfg-vsync" data-i18n="gd_cfg_vsync">Sincronização vertical (VSync)</label>
+            <input type="checkbox" id="gd-cfg-vsync" class="gd-switch" />
+          </div>
+          <div class="gd-cfg-row">
+            <label for="gd-cfg-showfps" data-i18n="gd_cfg_showfps">Mostrar FPS</label>
+            <input type="checkbox" id="gd-cfg-showfps" class="gd-switch" />
+          </div>
+          <div class="gd-cfg-row">
+            <label for="gd-cfg-filter" data-i18n="gd_cfg_filter">Filtro de textura</label>
+            <select id="gd-cfg-filter" class="gd-select">
+              <option value="Nearest">Nearest</option>
+              <option value="Bilinear">Bilinear</option>
+              <option value="Bicubic">Bicubic</option>
+              <option value="FXAA">FXAA</option>
+              <option value="FSR">FSR</option>
+            </select>
+          </div>
+          <div class="gd-cfg-row">
+            <label for="gd-cfg-audio" data-i18n="gd_cfg_audio">Áudio</label>
+            <input type="range" id="gd-cfg-audio" class="gd-range" min="0" max="150" step="1" />
+            <span class="gd-val" id="gd-cfg-audio-val">100</span>
+          </div>
+          <p class="sub-note" data-i18n="gd_cfg_note">Estas opções valem só para este app e não alteram as Configurações globais.</p>
+          <button class="btn gd-cfg-reset" id="gd-cfg-reset" data-i18n="gd_cfg_reset">Restaurar padrões deste app</button>
+        </div>
+
+        <div class="gd-panel hidden" data-panel="delete">
+          <p class="gd-warn" id="gd-del-warn"></p>
+          <button class="btn btn-danger" id="gd-del" data-i18n="gd_delete">Deletar app</button>
+        </div>
+
+        <div class="gd-panel hidden" data-panel="info">
+          <div class="gd-info" id="gd-info"></div>
+        </div>
+      </div>
+    </section>
+
+    <div id="gd-confirm" class="modal hidden">
+      <div class="modal-box">
+        <h3 id="gd-confirm-title"></h3>
+        <p class="gd-confirm-text" id="gd-confirm-text"></p>
+        <div class="modal-actions">
+          <button class="btn" id="gd-confirm-cancel" data-i18n="cancel">Cancelar</button>
+          <button class="btn btn-danger" id="gd-confirm-ok" data-i18n="gd_delete">Deletar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ MEDIA LIGHTBOX ============ -->
+    <div id="media-overlay" class="media-overlay hidden">
+      <div class="ov-stage" id="ov-stage"></div>
+    </div>
+
+  </div>
+
+  <audio id="app-audio" preload="none"></audio>
+
+  <div id="toast" class="toast"></div>
+
+  <!-- ============ UPDATE ============ -->
+  <div id="update-banner" class="update-banner hidden">
+    <span class="update-dot"></span>
+    <span class="update-text" id="update-banner-text"></span>
+    <button class="btn btn-primary update-btn" id="update-banner-btn" data-i18n="upd_download">Atualizar</button>
+    <button class="update-x" id="update-banner-x" aria-label="close">&#10005;</button>
+  </div>
+
+  <div id="update-modal" class="modal hidden">
+    <div class="modal-box update-box">
+      <h3 data-i18n="upd_title">Atualização disponível</h3>
+      <p class="update-ver"><span id="update-modal-cur"></span> &rarr; <strong id="update-modal-new"></strong></p>
+      <div class="update-notes hidden" id="update-modal-notes"></div>
+      <div class="update-bar hidden" id="update-bar"><div class="update-bar-fill" id="update-bar-fill"></div><span id="update-bar-label"></span></div>
+      <p class="update-err hidden" id="update-modal-err"></p>
+      <div class="modal-actions">
+        <button class="btn" id="update-later" data-i18n="upd_later">Agora não</button>
+        <button class="btn" id="update-web" data-i18n="upd_web">Abrir no GitHub</button>
+        <button class="btn btn-primary" id="update-now" data-i18n="upd_download">Atualizar agora</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal" class="modal hidden">
+    <div class="modal-box">
+      <h3 id="modal-title"></h3>
+      <input id="modal-input" class="dir-input" spellcheck="false" />
+      <div class="modal-actions">
+        <button class="btn" id="modal-cancel" data-i18n="cancel">Cancelar</button>
+        <button class="btn btn-primary" id="modal-ok" data-i18n="ok">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/rpcsv_android.js"></script>
+  <script src="js/locales.js"></script>
+  <script src="js/icons.js"></script>
+  <script src="js/wizard.js"></script>
+  <script src="js/lock.js"></script>
+  <script src="js/settings.js"></script>
+  <script src="js/home.js"></script>
+  <script src="js/gamedetail.js"></script>
+  <script src="js/install.js"></script>
+  <script src="js/apps.js"></script>
+  <script src="js/games.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

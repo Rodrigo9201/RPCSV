@@ -8,7 +8,12 @@ BT="$SDK/build-tools/35.0.0"
 AJ="$SDK/platforms/android-34/android.jar"
 OUT="$PWD/build"
 SRC="$PWD/src"
-RENDER=/root/rpcsv/renderer
+# O renderer (interface do app) mora neste repo, em renderer/. A copia local
+# em /root/rpcsv/renderer continua valendo como fallback para quem develope
+# fora do repo, mas a fonte de verdade versionada e a daqui: sem isso o botao
+# "Finalizar" e o resto da UI so existiriam dentro do APK, sem git.
+RENDER="$PWD/renderer"
+[ -d "$RENDER" ] || RENDER=/root/rpcsv/renderer
 ENGINE_APK=/tmp/opencode/current_official.apk
 
 KS="$PWD/keystore.jks"
@@ -72,8 +77,8 @@ if [ "${RPCSV_REGEN_BRAND:-0}" = "1" ]; then
 elif [ ! -f "$PWD/res/mipmap-xhdpi/ic_launcher.png" ] \
   || [ ! -f "$PWD/res/mipmap-xhdpi/ic_launcher_foreground.png" ] \
   || [ ! -f "$PWD/res/drawable-nodpi/rpcsv_mark.png" ] \
-  || [ ! -f /root/rpcsv/renderer/brand/rpcsv-mark.png ] \
-  || [ ! -f /root/rpcsv/renderer/brand/boot.wav ]; then
+  || [ ! -f "$RENDER/brand/rpcsv-mark.png" ] \
+  || [ ! -f "$RENDER/brand/boot.wav" ]; then
     echo "    arte ausente, gerando"
     python3 "$PWD/genbrand.py"
 else
